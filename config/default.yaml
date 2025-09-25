@@ -47,6 +47,7 @@ gui:
 # Kiosk Mode Configuration
 kiosk:
   enabled: false
+  use_gui: true  # Use graphical interface (true) or text-based interface (false)
   auto_scan: true  # Automatically scan USB devices when connected
   show_welcome: true  # Show welcome screen in kiosk mode
   result_timeout: 0  # Keep results displayed until USB removed (0 = indefinite)

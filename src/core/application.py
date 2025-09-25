@@ -13,6 +13,7 @@ from usb.detector import USBDetector
 from scanner.engine import ScanEngine
 from gui.main_window import MainWindow
 from gui.kiosk_window import KioskWindow
+from gui.kiosk_gui_window import KioskGUI
 from siem import SIEMClient
 
 # Use built-in logging until our custom logger is set up
@@ -55,8 +56,14 @@ class ArgusApplication:
         
         # Initialize GUI based on mode
         if self.config.get('kiosk.enabled', False):
-            logger.info("Initializing Kiosk Mode GUI")
-            self.gui = KioskWindow(self.config, self.scan_engine)
+            # Use graphical kiosk mode by default, fallback to text mode if GUI is disabled
+            use_gui = self.config.get('kiosk.use_gui', True)
+            if use_gui:
+                logger.info("Initializing Kiosk Mode GUI (Graphical)")
+                self.gui = KioskGUI(self.config, self.scan_engine)
+            else:
+                logger.info("Initializing Kiosk Mode GUI (Text)")
+                self.gui = KioskWindow(self.config, self.scan_engine)
         else:
             logger.info("Initializing Console GUI")
             self.gui = MainWindow(self.config, self.scan_engine)

@@ -31,6 +31,7 @@ class KioskWindow:
         self.current_scan_result = None
         self.scan_in_progress = False
         self.waiting_for_usb = True
+        self.scanned_device = None  # Track which device was scanned
         self.auto_scan_enabled = config.get('kiosk.auto_scan', True)
         
         logger.info("Kiosk GUI initialized")
@@ -79,15 +80,21 @@ class KioskWindow:
     def _setup_kiosk_display(self):
         """Setup the display for kiosk mode"""
         try:
-            # Clear screen
+            # Clear screen and hide cursor
             os.system('clear')
-            
-            # Hide cursor
             print('\033[?25l', end='', flush=True)
             
-            # Set terminal to raw mode to prevent system shortcuts
+            # Set terminal title for kiosk mode
+            print('\033]0;ArgusPI v2 - Kiosk Mode\007', end='', flush=True)
+            
+            # Disable terminal echo and canonical mode for security
             if self.config.get('kiosk.prevent_exit', True):
-                os.system('stty -echo -icanon')
+                os.system('stty -echo -icanon 2>/dev/null || true')
+            
+            # Try to hide system information
+            if self.config.get('kiosk.hide_system_info', True):
+                # Disable Ctrl+C, Ctrl+Z etc
+                os.system('stty intr undef susp undef quit undef 2>/dev/null || true')
                 
         except Exception as e:
             logger.warning(f"Could not setup kiosk display: {e}")
@@ -99,7 +106,10 @@ class KioskWindow:
             print('\033[?25h', end='', flush=True)
             
             # Restore terminal settings
-            os.system('stty echo icanon')
+            os.system('stty echo icanon intr ^C susp ^Z quit ^\\\\ 2>/dev/null || true')
+            
+            # Clear screen on exit
+            os.system('clear')
             
         except Exception as e:
             logger.warning(f"Could not cleanup kiosk display: {e}")
@@ -142,12 +152,21 @@ class KioskWindow:
         print("    |" + " " * 58 + "|")
         print("    |" + " " * 8 + "The device will be scanned automatically" + " " * 9 + "|")
         print("    |" + " " * 58 + "|")
+        
+        # Show helpful instructions
+        print("    |" + " " * 58 + "|")
+        print("    |" + " " * 12 + "Supported devices: USB flash drives" + " " * 11 + "|")
+        print("    |" + " " * 10 + "Scan results will be displayed here" + " " * 13 + "|")
+        print("    |" + " " * 58 + "|")
         print("    " + "=" * 60)
         print("\n" * 8)
         
-        # Show connected device count if any
-        if self.connected_devices:
-            print(f"    Connected devices: {len(self.connected_devices)}")
+        # Show connection status
+        removable_devices = [d for d in self.connected_devices if not self._is_system_device(d)]
+        if removable_devices:
+            print(f"    Removable devices detected: {len(removable_devices)}")
+        else:
+            print("    No removable devices detected")
     
     def _show_scanning_screen(self):
         """Show scanning in progress screen"""
@@ -200,7 +219,16 @@ class KioskWindow:
         print("    " + "=" * 60)
         print("    |" + " " * 58 + "|")
         
-        if threats_found == 0:
+        # Handle error states
+        if status.startswith('Error:'):
+            print("    |" + " " * 20 + "❌ SCAN ERROR" + " " * 25 + "|")
+            print("    |" + " " * 58 + "|")
+            error_msg = status[7:][:40]  # Remove "Error: " prefix and limit length
+            print(f"    |{' ' * 9}{error_msg}{' ' * (49 - len(error_msg))}|")
+            print("    |" + " " * 58 + "|")
+            print("    |" + " " * 8 + "Please try again with another device" + " " * 13 + "|")
+            
+        elif threats_found == 0:
             print("    |" + " " * 20 + "✓ SCAN COMPLETE - CLEAN" + " " * 17 + "|")
             print("    |" + " " * 58 + "|")
             print("    |" + " " * 15 + "No threats detected!" + " " * 24 + "|")
@@ -212,24 +240,26 @@ class KioskWindow:
         
         print("    |" + " " * 58 + "|")
         
-        scanned_text = f"Files scanned: {result.get('scanned_files', 0)}"
-        scan_time_text = f"Scan time: {result.get('scan_time', 0):.1f} seconds"
-        
-        print(f"    |{' ' * 8}{scanned_text}{' ' * (50 - len(scanned_text))}|")
-        print(f"    |{' ' * 8}{scan_time_text}{' ' * (50 - len(scan_time_text))}|")
-        print("    |" + " " * 58 + "|")
-        
-        # Show threat details if any
-        threats = result.get('threats', [])
-        if threats and len(threats) <= 3:  # Show up to 3 threats
-            print("    |" + " " * 20 + "Threat Details:" + " " * 24 + "|")
-            for threat in threats[:3]:
-                threat_name = threat.get('threat', 'Unknown')[:35]
-                threat_display = f"- {threat_name}"
-                print(f"    |{' ' * 8}{threat_display}{' ' * (50 - len(threat_display))}|")
-        elif len(threats) > 3:
-            threat_summary = f"({len(threats)} threats found)"
-            print(f"    |{' ' * 15}{threat_summary}{' ' * (43 - len(threat_summary))}|")
+        # Show scan statistics if not an error
+        if not status.startswith('Error:'):
+            scanned_text = f"Files scanned: {result.get('scanned_files', 0)}"
+            scan_time_text = f"Scan time: {result.get('scan_time', 0):.1f} seconds"
+            
+            print(f"    |{' ' * 8}{scanned_text}{' ' * (50 - len(scanned_text))}|")
+            print(f"    |{' ' * 8}{scan_time_text}{' ' * (50 - len(scan_time_text))}|")
+            print("    |" + " " * 58 + "|")
+            
+            # Show threat details if any
+            threats = result.get('threats', [])
+            if threats and len(threats) <= 3:  # Show up to 3 threats
+                print("    |" + " " * 20 + "Threat Details:" + " " * 24 + "|")
+                for threat in threats[:3]:
+                    threat_name = threat.get('threat', 'Unknown')[:35]
+                    threat_display = f"- {threat_name}"
+                    print(f"    |{' ' * 8}{threat_display}{' ' * (50 - len(threat_display))}|")
+            elif len(threats) > 3:
+                threat_summary = f"({len(threats)} threats found)"
+                print(f"    |{' ' * 15}{threat_summary}{' ' * (43 - len(threat_summary))}|")
         
         print("    |" + " " * 58 + "|")
         print("    |" + " " * 8 + "Remove USB device to scan another" + " " * 17 + "|")
@@ -254,9 +284,13 @@ class KioskWindow:
         
         logger.info(f"Kiosk: USB device connected: {device_info}")
         
-        # Auto-start scan if enabled and not already scanning
-        if self.auto_scan_enabled and not self.scan_in_progress and device_info.mount_point:
+        # Auto-start scan if enabled, not already scanning, and device has mount point
+        # Only scan removable devices (not system drives)
+        if (self.auto_scan_enabled and not self.scan_in_progress and 
+            device_info.mount_point and self.waiting_for_usb and
+            not self._is_system_device(device_info)):
             self.waiting_for_usb = False
+            self.scanned_device = device_info
             self._start_auto_scan(device_info)
     
     def on_usb_disconnected(self, device_info):
@@ -266,10 +300,33 @@ class KioskWindow:
         
         logger.info(f"Kiosk: USB device disconnected: {device_info}")
         
-        # Reset kiosk state for next user
+        # Only reset if the disconnected device was the one being scanned
+        if self.scanned_device and self._devices_match(device_info, self.scanned_device):
+            logger.info("Scanned device removed - resetting kiosk for next user")
+            self._reset_kiosk_state()
+    
+    def _devices_match(self, device1, device2):
+        """Check if two device info objects represent the same device"""
+        if not device1 or not device2:
+            return False
+        return (device1.device_path == device2.device_path and 
+                device1.mount_point == device2.mount_point)
+    
+    def _is_system_device(self, device_info):
+        """Check if device is a system device that shouldn't be auto-scanned"""
+        if not device_info.mount_point:
+            return True
+        
+        # System mount points to avoid
+        system_mounts = ['/', '/boot', '/boot/efi', '/mnt', '/home', '/usr', '/var', '/tmp']
+        return device_info.mount_point in system_mounts
+    
+    def _reset_kiosk_state(self):
+        """Reset kiosk state for next user"""
         self.current_scan_result = None
         self.scan_in_progress = False
         self.waiting_for_usb = True
+        self.scanned_device = None
         
         # Clear any scan progress info
         if hasattr(self, 'scan_progress_info'):

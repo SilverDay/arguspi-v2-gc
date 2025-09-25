@@ -246,4 +246,4 @@ This version of ArgusPI v2 is designed to be modular and extensible. Key compone
 
 ## License
 
-This project is part of the ArgusPI family of USB security tools.
+This project is provided under the MIT License.

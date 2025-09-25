@@ -35,8 +35,6 @@ class ArgusApplication:
         
         # Initialize USB detector
         self.usb_detector = USBDetector(self.config)
-        self.usb_detector.on_device_connected = self._handle_usb_connected
-        self.usb_detector.on_device_disconnected = self._handle_usb_disconnected
         
         # Initialize scan engine
         self.scan_engine = ScanEngine(self.config)
@@ -46,6 +44,10 @@ class ArgusApplication:
         self.gui.on_scan_request = self._handle_scan_request
         self.gui.on_stop_request = self._handle_stop_request
         
+        # Set up USB callbacks AFTER GUI is initialized
+        self.usb_detector.on_device_connected = self._handle_usb_connected
+        self.usb_detector.on_device_disconnected = self._handle_usb_disconnected
+        
         logger.info("Application components initialized")
     
     def run(self):
@@ -53,6 +55,10 @@ class ArgusApplication:
         try:
             self.initialize()
             self.running = True
+            
+            # Do an initial USB scan synchronously to populate devices
+            logger.debug("Performing initial USB device scan...")
+            self.usb_detector._scan_existing_devices()
             
             # Start USB detection in background thread
             usb_thread = threading.Thread(target=self.usb_detector.start_monitoring, daemon=True)
@@ -84,15 +90,19 @@ class ArgusApplication:
     
     def _handle_usb_connected(self, device_info):
         """Handle USB device connection"""
-        logger.info(f"USB device connected: {device_info}")
+        logger.debug(f"Application: USB device connected callback - {device_info}")
         if self.gui:
             self.gui.on_usb_connected(device_info)
+        else:
+            logger.warning("GUI not available for USB connected event")
     
     def _handle_usb_disconnected(self, device_info):
         """Handle USB device disconnection"""
-        logger.info(f"USB device disconnected: {device_info}")
+        logger.debug(f"Application: USB device disconnected callback - {device_info}")
         if self.gui:
             self.gui.on_usb_disconnected(device_info)
+        else:
+            logger.warning("GUI not available for USB disconnected event")
     
     def _handle_scan_request(self, device_path):
         """Handle scan request from GUI"""

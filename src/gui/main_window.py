@@ -131,6 +131,8 @@ class MainWindow:
         print("CONNECTED USB DEVICES")
         print("-" * 40)
         
+        logger.debug(f"GUI: Current connected devices count: {len(self.connected_devices)}")
+        
         if not self.connected_devices:
             print("No USB devices connected.")
         else:
@@ -176,11 +178,14 @@ class MainWindow:
     
     def on_usb_connected(self, device_info):
         """Handle USB device connection"""
-        logger.info(f"GUI: USB device connected - {device_info}")
+        logger.debug(f"GUI: USB device connected callback - {device_info}")
         
         # Add to connected devices list if not already present
         if device_info not in self.connected_devices:
             self.connected_devices.append(device_info)
+            logger.debug(f"GUI: Added device to connected list. Total devices: {len(self.connected_devices)}")
+        else:
+            logger.debug("GUI: Device already in connected list")
             
         if self.running and not self.scan_in_progress:
             print(f"\n[USB] Device connected: {device_info}")

@@ -2,7 +2,7 @@
 app:
   name: "ArgusPI v2"
   version: "2.0.0"
-  debug: false
+  debug: true
   
 # USB Detection settings
 usb:
@@ -26,7 +26,7 @@ scanner:
       max_daily_requests: 500
       
   # File types to scan
-  scan_types: ["exe", "dll", "bat", "cmd", "scr", "com", "pif", "jar", "zip", "rar", "7z"]
+  scan_types: ["exe", "dll", "bat", "cmd", "scr", "com", "pif", "jar", "zip", "rar", "7z", "inf", "txt"]
   exclude_patterns: ["*.log", "System Volume Information", "$RECYCLE.BIN"]
   
 # GUI Configuration

@@ -6,14 +6,15 @@ import time
 import threading
 from pathlib import Path
 from typing import Optional
+import logging
 
 from config.manager import Config
-from logging.logger import get_logger
 from usb.detector import USBDetector
 from scanner.engine import ScanEngine
 from gui.main_window import MainWindow
 
-logger = get_logger(__name__)
+# Use built-in logging until our custom logger is set up
+logger = logging.getLogger(__name__)
 
 
 class ArgusApplication:

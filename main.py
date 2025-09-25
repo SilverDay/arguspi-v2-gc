@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from core.application import ArgusApplication
-from logging.logger import setup_logging
+from argus_logging.logger import setup_logging
 
 
 def signal_handler(signum, frame):

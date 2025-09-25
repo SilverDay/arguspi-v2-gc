@@ -8,11 +8,11 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Optional, Callable, Dict, List
-import psutil
+import json
+import logging
 
-from logging.logger import get_logger
-
-logger = get_logger(__name__)
+# Use built-in logging until our custom logger is set up  
+logger = logging.getLogger(__name__)
 
 
 class USBDeviceInfo:
@@ -58,8 +58,18 @@ class USBDetector:
         self.read_only = config.get('usb.read_only', True)
         self.supported_fs = config.get('usb.supported_filesystems', ['vfat', 'ntfs', 'ext2', 'ext3', 'ext4'])
         
-        # Ensure mount base directory exists
-        self.mount_base.mkdir(parents=True, exist_ok=True)
+        # Ensure mount base directory exists (use local directory if /media fails)
+        try:
+            self.mount_base.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to local directory for testing
+            self.mount_base = Path.cwd() / "test_mount"
+            self.mount_base.mkdir(parents=True, exist_ok=True)
+            logger.warning(f"Using fallback mount directory: {self.mount_base}")
+        except Exception as e:
+            logger.error(f"Could not create mount directory: {e}")
+            self.mount_base = Path.cwd() / "test_mount"
+            self.mount_base.mkdir(parents=True, exist_ok=True)
     
     def start_monitoring(self):
         """Start monitoring for USB device changes"""

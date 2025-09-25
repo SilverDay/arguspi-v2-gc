@@ -4,6 +4,12 @@ app:
   version: "2.0.0"
   debug: true
   
+# Station identification
+station:
+  name: "ArgusPI Scanner"  # Custom name for this scan station
+  location: ""             # Optional location description
+  auto_start: false        # Auto-start kiosk mode on boot
+  
 # USB Detection settings
 usb:
   auto_detect: true
@@ -63,3 +69,21 @@ network:
   connectivity_test_url: "https://www.virustotal.com"
   timeout: 10
   offline_mode_fallback: true
+
+# SIEM Integration
+siem:
+  enabled: false
+  protocol: "syslog"        # syslog, http, tcp
+  server: "localhost"
+  port: 514
+  facility: "local0"        # For syslog protocol
+  severity: "info"          # For syslog protocol
+  format: "json"            # json, cef, leef
+  events:
+    scan_start: true
+    scan_complete: true
+    threats_found: true
+    usb_connected: true
+    usb_disconnected: true
+    system_errors: true
+  timeout: 5

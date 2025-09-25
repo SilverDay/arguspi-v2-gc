@@ -22,6 +22,10 @@ class KioskWindow:
         self.scan_engine = scan_engine
         self.running = False
         
+        # Station information
+        self.station_name = config.get('station.name', 'ArgusPI Scanner')
+        self.station_location = config.get('station.location', '')
+        
         # Callbacks
         self.on_scan_request: Optional[Callable] = None
         self.on_stop_request: Optional[Callable] = None
@@ -34,7 +38,7 @@ class KioskWindow:
         self.scanned_device = None  # Track which device was scanned
         self.auto_scan_enabled = config.get('kiosk.auto_scan', True)
         
-        logger.info("Kiosk GUI initialized")
+        logger.info(f"Kiosk GUI initialized for station: {self.station_name}")
     
     def run(self):
         """Run the kiosk mode interface"""
@@ -120,7 +124,10 @@ class KioskWindow:
         
         print("=" * 80)
         print()
+        print(f"        {self.station_name}")
         print(f"        {self.config.get('app.name', 'ArgusPI v2')} - KIOSK MODE")
+        if self.station_location:
+            print(f"        Location: {self.station_location}")
         print(f"        Version {self.config.get('app.version', '2.0.0')}")
         print("        USB Virus Scanner for Public Use")
         print()
@@ -143,9 +150,10 @@ class KioskWindow:
         animation_chars = ['|', '/', '-', '\\']
         char = animation_chars[int(time.time()) % len(animation_chars)]
         
-        print("\n" * 8)
+        print("\n" * 6)
         print("    " + "=" * 60)
         print("    |" + " " * 58 + "|")
+        print("    |" + f" {self.station_name}".center(58) + "|")
         print("    |" + " " * 15 + "USB VIRUS SCANNER" + " " * 25 + "|")
         print("    |" + " " * 58 + "|")
         print("    |" + " " * 10 + f"Please insert your USB device {char}" + " " * 15 + "|")

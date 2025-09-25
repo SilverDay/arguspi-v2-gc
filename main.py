@@ -71,8 +71,18 @@ def main():
     setup_logging()
     
     try:
+        # Check for auto-start configuration if not explicitly in kiosk mode
+        kiosk_mode = args.kiosk
+        if not kiosk_mode:
+            # Load config to check auto_start setting
+            from config.manager import Config
+            config = Config(args.config)
+            kiosk_mode = config.get('station.auto_start', False)
+            if kiosk_mode:
+                logging.info("Auto-start enabled, starting in kiosk mode")
+        
         # Create and run the application
-        app = ArgusApplication(config_file=args.config, kiosk_mode=args.kiosk)
+        app = ArgusApplication(config_file=args.config, kiosk_mode=kiosk_mode)
         app.run()
     except KeyboardInterrupt:
         logging.info("Application interrupted by user")

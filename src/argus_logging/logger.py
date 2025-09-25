@@ -6,8 +6,14 @@ import os
 import logging
 import logging.handlers
 from pathlib import Path
-import colorlog
 import yaml
+
+# Handle optional dependencies
+try:
+    import colorlog
+    HAS_COLORLOG = True
+except ImportError:
+    HAS_COLORLOG = False
 
 
 def setup_logging(config_path=None):
@@ -49,18 +55,25 @@ def setup_logging(config_path=None):
     
     # Console handler with colors (if enabled)
     if log_config.get('console_output', True):
-        console_handler = colorlog.StreamHandler()
-        console_formatter = colorlog.ColoredFormatter(
-            '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%H:%M:%S',
-            log_colors={
-                'DEBUG': 'cyan',
-                'INFO': 'green',
-                'WARNING': 'yellow',
-                'ERROR': 'red',
-                'CRITICAL': 'red,bg_white',
-            }
-        )
+        if HAS_COLORLOG:
+            console_handler = colorlog.StreamHandler()
+            console_formatter = colorlog.ColoredFormatter(
+                '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%H:%M:%S',
+                log_colors={
+                    'DEBUG': 'cyan',
+                    'INFO': 'green',
+                    'WARNING': 'yellow',
+                    'ERROR': 'red',
+                    'CRITICAL': 'red,bg_white',
+                }
+            )
+        else:
+            console_handler = logging.StreamHandler()
+            console_formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                datefmt='%H:%M:%S'
+            )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
     

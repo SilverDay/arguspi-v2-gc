@@ -8,11 +8,11 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Optional, Callable, Dict, List
-import psutil
+import json
+import logging
 
-from logging.logger import get_logger
-
-logger = get_logger(__name__)
+# Use built-in logging until our custom logger is set up  
+logger = logging.getLogger(__name__)
 
 
 class USBDeviceInfo:
@@ -58,8 +58,18 @@ class USBDetector:
         self.read_only = config.get('usb.read_only', True)
         self.supported_fs = config.get('usb.supported_filesystems', ['vfat', 'ntfs', 'ext2', 'ext3', 'ext4'])
         
-        # Ensure mount base directory exists
-        self.mount_base.mkdir(parents=True, exist_ok=True)
+        # Ensure mount base directory exists (use local directory if /media fails)
+        try:
+            self.mount_base.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            # Fallback to local directory for testing
+            self.mount_base = Path.cwd() / "test_mount"
+            self.mount_base.mkdir(parents=True, exist_ok=True)
+            logger.warning(f"Using fallback mount directory: {self.mount_base}")
+        except Exception as e:
+            logger.error(f"Could not create mount directory: {e}")
+            self.mount_base = Path.cwd() / "test_mount"
+            self.mount_base.mkdir(parents=True, exist_ok=True)
     
     def start_monitoring(self):
         """Start monitoring for USB device changes"""
@@ -102,22 +112,50 @@ class USBDetector:
     
     def _scan_existing_devices(self):
         """Scan for already connected USB devices"""
-        current_devices = self._get_current_devices()
-        for device_path, device_info in current_devices.items():
-            self.devices[device_path] = device_info
-            logger.info(f"Found existing USB device: {device_info}")
+        logger.debug("Scanning for existing USB devices...")
+        try:
+            current_devices = self._get_current_devices()
+            logger.debug(f"Found {len(current_devices)} devices")
+            for device_path, device_info in current_devices.items():
+                self.devices[device_path] = device_info
+                logger.info(f"Found existing USB device: {device_info}")
+                # Notify application of connected device
+                if self.on_device_connected:
+                    logger.debug(f"Calling on_device_connected callback for {device_path}")
+                    try:
+                        self.on_device_connected(device_info)
+                    except Exception as e:
+                        logger.error(f"Error in on_device_connected callback: {e}")
+                else:
+                    logger.warning("No on_device_connected callback set")
+        except Exception as e:
+            logger.error(f"Error in _scan_existing_devices: {e}", exc_info=True)
     
     def _get_current_devices(self) -> Dict[str, USBDeviceInfo]:
         """Get currently connected USB devices"""
         devices = {}
+        
+        # In debug mode, add a simulated USB device for testing
+        if self.config.get('app.debug', False):
+            test_usb_path = self.mount_base / "test_usb"
+            if test_usb_path.exists():
+                device_info = USBDeviceInfo(
+                    device_path="/dev/test_usb",
+                    mount_point=str(test_usb_path),
+                    filesystem="vfat",
+                    size=1024*1024,  # 1MB
+                    label="TEST_USB"
+                )
+                devices["/dev/test_usb"] = device_info
+                logger.debug("Added test USB device for debugging")
         
         try:
             # Use lsblk to get block device information
             result = subprocess.run(['lsblk', '-J', '-o', 'NAME,FSTYPE,SIZE,MOUNTPOINT,LABEL'], 
                                     capture_output=True, text=True, check=True)
             
-            import json
             data = json.loads(result.stdout)
+            logger.debug(f"Processing {len(data.get('blockdevices', []))} block devices from lsblk")
             
             for device in data.get('blockdevices', []):
                 self._process_block_device(device, devices, '/dev/')
@@ -129,6 +167,7 @@ class USBDetector:
         except Exception as e:
             logger.error(f"Error getting current devices: {e}")
         
+        logger.debug(f"Returning {len(devices)} devices")
         return devices
     
     def _process_block_device(self, device: dict, devices: dict, parent_path: str):
@@ -160,6 +199,11 @@ class USBDetector:
     def _is_usb_device(self, device_path: str) -> bool:
         """Check if device is a USB device"""
         try:
+            # For development/testing mode, treat any removable device as USB
+            if self.config.get('app.debug', False):
+                # In debug mode, treat any device with vfat/ntfs filesystem as potential USB
+                return True
+                
             # Check if device path contains USB indicators
             if '/dev/sd' in device_path:
                 # Check if it's actually USB via udev

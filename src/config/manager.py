@@ -3,12 +3,13 @@ Configuration management for ArgusPI v2
 """
 
 import os
+import logging
 import yaml
 from pathlib import Path
 from typing import Dict, Any
-from logging.logger import get_logger
 
-logger = get_logger(__name__)
+# Use built-in logging until our custom logger is set up
+logger = logging.getLogger(__name__)
 
 
 class Config:

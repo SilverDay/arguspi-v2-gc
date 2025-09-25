@@ -11,8 +11,11 @@ ArgusPI v2 is a comprehensive USB virus scanning solution designed for Raspberry
 - **Automatic USB Device Detection**: Automatically detects and mounts USB devices
 - **Multi-Engine Scanning**: Supports ClamAV and VirusTotal scanning engines
 - **Console Mode**: Full-featured command-line interface for administrators
-- **Kiosk Mode**: Simple, public-facing interface for unattended operation
+- **Graphical Kiosk Mode**: Modern tkinter-based GUI with progress bars and real-time statistics
+- **Text Kiosk Mode**: Fallback text-based interface for minimal systems
 - **Read-Only Protection**: Mounts USB devices in read-only mode for safety
+- **Real-Time Progress Tracking**: Live updates of scan progress, elapsed time, and file counts
+- **Visual Status Indicators**: Color-coded feedback for scan results and system status
 - **Comprehensive Logging**: Detailed logging with configurable levels
 - **Configurable**: YAML-based configuration with environment variable overrides
 
@@ -66,11 +69,34 @@ python3 main.py --kiosk
 5. System resets for the next user
 
 **Kiosk Mode Features:**
-- Full-screen interface optimized for touchscreens
-- Automatic USB device scanning
-- Clear visual feedback for scan progress
-- Security restrictions to prevent OS access
-- Simple, user-friendly design
+- **Graphical Interface**: Modern tkinter-based GUI with progress bars and real-time statistics
+- **Text Interface Fallback**: Option to use original text-based interface
+- **Full-screen interface** optimized for touchscreens and public displays
+- **Automatic USB device scanning** with visual progress indication
+- **Real-time scan statistics**: elapsed time, files scanned, threats found
+- **Color-coded status indicators**: green for clean, red for threats, blue for information
+- **Clear visual feedback** for all scan phases (waiting, scanning, results)
+- **Security restrictions** to prevent OS access
+- **Simple, user-friendly design** suitable for public use
+
+The graphical interface includes:
+- Information area showing current actions and instructions
+- Graphical progress bar with percentage completion
+- Statistics panel with elapsed time and file counts
+- Color-coded results display with threat details
+
+### Graphical Interface Preview
+
+The new graphical kiosk mode provides an intuitive user interface:
+
+**Waiting State:** Clean, welcoming interface with clear instructions
+![Waiting State](kiosk_gui_waiting.png)
+
+**Scanning Progress:** Real-time progress bar with statistics
+![Scanning Progress](kiosk_gui_scanning.png)
+
+**Results Display:** Clear feedback with color-coded threat status
+![Results Display](kiosk_gui_results.png)
 
 ### Command Line Options
 
@@ -150,6 +176,7 @@ siem:
 ```yaml
 kiosk:
   enabled: false                # Enable kiosk mode
+  use_gui: true                 # Use graphical interface (true) or text interface (false)
   auto_scan: true              # Auto-scan connected USB devices
   show_welcome: true           # Show welcome screen
   result_timeout: 0            # Keep results displayed (0 = until USB removed)
@@ -157,6 +184,17 @@ kiosk:
   hide_system_info: true       # Hide system information
   prevent_exit: true           # Prevent accidental exit
   screen_saver_timeout: 300    # Screen saver timeout (seconds)
+```
+
+### GUI Settings
+```yaml
+gui:
+  mode: "simple"               # Interface complexity: simple or expert
+  theme: "light"               # Color theme: light or dark
+  orientation: "auto"          # Display orientation: auto, portrait, landscape
+  touchscreen: true            # Enable touch-friendly interface
+  fullscreen: true             # Run in full-screen mode (kiosk)
+  progress_update_interval: 1.0 # Progress update frequency (seconds)
 ```
 
 ### Scanner Settings

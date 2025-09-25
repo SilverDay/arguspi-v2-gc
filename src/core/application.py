@@ -12,6 +12,7 @@ from config.manager import Config
 from usb.detector import USBDetector
 from scanner.engine import ScanEngine
 from gui.main_window import MainWindow
+from gui.kiosk_window import KioskWindow
 
 # Use built-in logging until our custom logger is set up
 logger = logging.getLogger(__name__)
@@ -20,14 +21,21 @@ logger = logging.getLogger(__name__)
 class ArgusApplication:
     """Main application class for ArgusPI v2"""
     
-    def __init__(self, config_file: Optional[str] = None):
+    def __init__(self, config_file: Optional[str] = None, kiosk_mode: bool = False):
         self.config = Config(config_file)
+        self.kiosk_mode = kiosk_mode
         self.usb_detector = None
         self.scan_engine = None
         self.gui = None
         self.running = False
         
+        # Override config if kiosk mode is enabled via command line
+        if self.kiosk_mode:
+            self.config.set('kiosk.enabled', True)
+        
         logger.info(f"Starting {self.config.get('app.name')} v{self.config.get('app.version')}")
+        if self.kiosk_mode:
+            logger.info("Kiosk mode enabled")
     
     def initialize(self):
         """Initialize all application components"""
@@ -39,8 +47,14 @@ class ArgusApplication:
         # Initialize scan engine
         self.scan_engine = ScanEngine(self.config)
         
-        # Initialize GUI
-        self.gui = MainWindow(self.config, self.scan_engine)
+        # Initialize GUI based on mode
+        if self.config.get('kiosk.enabled', False):
+            logger.info("Initializing Kiosk Mode GUI")
+            self.gui = KioskWindow(self.config, self.scan_engine)
+        else:
+            logger.info("Initializing Console GUI")
+            self.gui = MainWindow(self.config, self.scan_engine)
+            
         self.gui.on_scan_request = self._handle_scan_request
         self.gui.on_stop_request = self._handle_stop_request
         

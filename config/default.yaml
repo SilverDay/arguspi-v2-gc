@@ -37,6 +37,17 @@ gui:
   touchscreen: true
   fullscreen: true
   progress_update_interval: 1.0  # seconds
+
+# Kiosk Mode Configuration
+kiosk:
+  enabled: false
+  auto_scan: true  # Automatically scan USB devices when connected
+  show_welcome: true  # Show welcome screen in kiosk mode
+  result_timeout: 0  # Keep results displayed until USB removed (0 = indefinite)
+  allow_manual_scan: false  # Allow manual scan initiation in kiosk mode
+  hide_system_info: true  # Hide system information that could reveal OS details
+  prevent_exit: true  # Prevent accidental exit from kiosk mode
+  screen_saver_timeout: 300  # Screen saver timeout in seconds (0 = disabled)
   
 # Logging configuration
 logging:

@@ -20,6 +20,10 @@ class MainWindow:
         self.scan_engine = scan_engine
         self.running = False
         
+        # Station information
+        self.station_name = config.get('station.name', 'ArgusPI Scanner')
+        self.station_location = config.get('station.location', '')
+        
         # Callbacks
         self.on_scan_request: Optional[Callable] = None
         self.on_stop_request: Optional[Callable] = None
@@ -29,7 +33,7 @@ class MainWindow:
         self.current_scan_info = None
         self.scan_in_progress = False
         
-        logger.info("GUI initialized in console mode")
+        logger.info(f"GUI initialized in console mode for station: {self.station_name}")
     
     def run(self):
         """Run the main GUI loop - console version"""
@@ -65,6 +69,9 @@ class MainWindow:
     def _show_welcome(self):
         """Show welcome screen"""
         print("=" * 60)
+        print(f"    {self.station_name}")
+        if self.station_location:
+            print(f"    Location: {self.station_location}")
         print(f"    {self.config.get('app.name', 'ArgusPI v2')}")
         print(f"    Version {self.config.get('app.version', '2.0.0')}")
         print("    USB Virus Scanner for Raspberry Pi")

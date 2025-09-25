@@ -83,9 +83,68 @@ Available options:
 - `--config CONFIG`: Use custom configuration file
 - `--version`: Show version information
 
+### Auto-Startup Service
+
+ArgusPI v2 can be installed as a system service for automatic startup after reboot:
+
+```bash
+sudo ./install.sh
+```
+
+This will:
+- Install ArgusPI to `/opt/arguspi`
+- Create a systemd service
+- Enable automatic startup (if configured)
+
+**Service Management:**
+```bash
+# Start the service
+sudo systemctl start arguspi
+
+# Stop the service
+sudo systemctl stop arguspi
+
+# Check service status
+sudo systemctl status arguspi
+
+# View logs
+sudo journalctl -u arguspi -f
+
+# Enable/disable auto-start
+sudo systemctl enable arguspi   # Enable
+sudo systemctl disable arguspi  # Disable
+```
+
 ## Configuration
 
 The application uses a YAML configuration file located at `config/default.yaml`. Key configuration sections:
+
+### Station Settings
+```yaml
+station:
+  name: "ArgusPI Scanner"    # Custom name for this scan station
+  location: ""               # Optional location description  
+  auto_start: false          # Auto-start kiosk mode on system boot
+```
+
+### SIEM Integration
+```yaml
+siem:
+  enabled: false             # Enable SIEM integration
+  protocol: "syslog"         # Protocol: syslog, http, tcp
+  server: "localhost"        # SIEM server address
+  port: 514                  # SIEM server port
+  facility: "local0"         # Syslog facility (for syslog protocol)
+  format: "json"             # Message format: json, cef, leef
+  events:                    # Which events to send
+    scan_start: true
+    scan_complete: true
+    threats_found: true
+    usb_connected: true
+    usb_disconnected: true
+    system_errors: true
+  timeout: 5                 # Connection timeout in seconds
+```
 
 ### Kiosk Mode Settings
 ```yaml
@@ -128,6 +187,23 @@ usb:
 - **System access prevention**: Terminal shortcuts and system commands are disabled
 - **Automatic reset**: System resets after each USB device removal
 - **No configuration access**: Users cannot modify settings in kiosk mode
+
+### SIEM Integration
+ArgusPI v2 supports integration with Security Information and Event Management (SIEM) systems:
+
+- **Multiple Protocols**: Syslog (UDP), HTTP POST, and raw TCP
+- **Flexible Formats**: JSON, Common Event Format (CEF), and Log Event Extended Format (LEEF)
+- **Comprehensive Events**: USB connections, scan results, threat detections, and system errors
+- **Customizable Station Identity**: Each scanner can be uniquely identified by name and location
+- **Asynchronous Delivery**: Non-blocking event delivery to prevent impact on scanning performance
+
+**Supported SIEM Systems:**
+- Splunk
+- IBM QRadar
+- ArcSight
+- LogRhythm
+- Elastic Security (ELK Stack)
+- Any syslog-compatible system
 
 ## Use Cases
 

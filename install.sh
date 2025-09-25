@@ -10,29 +10,32 @@ SERVICE_FILE="system/arguspi.service"
 
 # Detect the user who should own the installation
 # Use SUDO_USER if available (user who ran sudo), otherwise fall back to other methods
+DETECTED_USER=""
 if [ -n "$SUDO_USER" ] && [ "$SUDO_USER" != "root" ]; then
-    USER="$SUDO_USER"
+    DETECTED_USER="$SUDO_USER"
 elif [ -n "$USER" ] && [ "$USER" != "root" ]; then
-    USER="$USER"
+    DETECTED_USER="$USER"
 elif command -v logname >/dev/null 2>&1; then
-    USER="$(logname 2>/dev/null || echo "")"
-    if [ -z "$USER" ] || [ "$USER" = "root" ]; then
-        USER="$(who am i | awk '{print $1}' 2>/dev/null || echo "")"
+    DETECTED_USER="$(logname 2>/dev/null || echo "")"
+    if [ -z "$DETECTED_USER" ] || [ "$DETECTED_USER" = "root" ]; then
+        DETECTED_USER="$(who am i | awk '{print $1}' 2>/dev/null || echo "")"
     fi
 fi
 
 # Final fallback - use the first non-root user with a home directory
-if [ -z "$USER" ] || [ "$USER" = "root" ]; then
-    USER="$(getent passwd | grep -E ':/home/' | head -1 | cut -d: -f1)"
+if [ -z "$DETECTED_USER" ] || [ "$DETECTED_USER" = "root" ]; then
+    DETECTED_USER="$(getent passwd | grep -E ':/home/' | head -1 | cut -d: -f1)"
 fi
 
 # If still no user found, exit with error
-if [ -z "$USER" ] || [ "$USER" = "root" ]; then
+if [ -z "$DETECTED_USER" ] || [ "$DETECTED_USER" = "root" ]; then
     echo "Error: Could not determine non-root user for installation."
     echo "Please specify the user by setting the USER environment variable:"
     echo "  sudo USER=your_username ./install.sh"
     exit 1
 fi
+
+USER="$DETECTED_USER"
 
 echo "ArgusPI v2 Installation Script"
 echo "==============================="

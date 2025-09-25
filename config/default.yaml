@@ -1,0 +1,54 @@
+# Default configuration for ArgusPI v2
+app:
+  name: "ArgusPI v2"
+  version: "2.0.0"
+  debug: false
+  
+# USB Detection settings
+usb:
+  auto_detect: true
+  mount_point: "/media/arguspi"
+  read_only: true
+  supported_filesystems: ["vfat", "ntfs", "ext2", "ext3", "ext4"]
+  
+# Scanning configuration
+scanner:
+  engines:
+    clamav:
+      enabled: true
+      database_update: true
+      max_file_size: "100M"
+      max_scan_size: "1000M"
+    virustotal:
+      enabled: true
+      api_key: ""  # Set via environment variable VT_API_KEY
+      timeout: 30
+      max_daily_requests: 500
+      
+  # File types to scan
+  scan_types: ["exe", "dll", "bat", "cmd", "scr", "com", "pif", "jar", "zip", "rar", "7z"]
+  exclude_patterns: ["*.log", "System Volume Information", "$RECYCLE.BIN"]
+  
+# GUI Configuration
+gui:
+  mode: "simple"  # simple or expert
+  theme: "light"  # light or dark
+  orientation: "auto"  # auto, portrait, landscape
+  touchscreen: true
+  fullscreen: true
+  progress_update_interval: 1.0  # seconds
+  
+# Logging configuration
+logging:
+  level: "INFO"
+  file: "logs/arguspi.log"
+  max_size: "10M"
+  backup_count: 5
+  console_output: true
+  
+# Network settings
+network:
+  check_connectivity: true
+  connectivity_test_url: "https://www.virustotal.com"
+  timeout: 10
+  offline_mode_fallback: true

@@ -1,0 +1,21 @@
+# Core dependencies
+psutil>=5.9.0
+watchdog>=3.0.0
+requests>=2.31.0
+pyclamd>=0.5.0
+
+# GUI dependencies
+tkinter
+pillow>=10.0.0
+
+# System integration
+pyudev>=0.24.0
+python-daemon>=3.0.0
+
+# Configuration and logging
+pyyaml>=6.0
+colorlog>=6.7.0
+
+# Testing dependencies (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0

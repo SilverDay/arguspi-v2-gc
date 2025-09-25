@@ -8,6 +8,7 @@ import os
 import sys
 import signal
 import logging
+import argparse
 from pathlib import Path
 
 # Add src directory to Python path
@@ -23,8 +24,45 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="ArgusPI v2 - USB Virus Scanner for Raspberry Pi",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 main.py                   # Start in normal console mode
+  python3 main.py --kiosk           # Start in kiosk mode
+  python3 main.py --config custom.yaml  # Use custom config file
+        """
+    )
+    
+    parser.add_argument(
+        '--kiosk', 
+        action='store_true',
+        help='Start in kiosk mode for public use'
+    )
+    
+    parser.add_argument(
+        '--config', '-c',
+        type=str,
+        help='Path to configuration file'
+    )
+    
+    parser.add_argument(
+        '--version', '-v',
+        action='version',
+        version='ArgusPI v2.0.0'
+    )
+    
+    return parser.parse_args()
+
+
 def main():
     """Main application entry point"""
+    # Parse command line arguments
+    args = parse_arguments()
+    
     # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -34,7 +72,7 @@ def main():
     
     try:
         # Create and run the application
-        app = ArgusApplication()
+        app = ArgusApplication(config_file=args.config, kiosk_mode=args.kiosk)
         app.run()
     except KeyboardInterrupt:
         logging.info("Application interrupted by user")

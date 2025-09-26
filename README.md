@@ -159,7 +159,24 @@ Available options:
 
 - `--kiosk`: Start in kiosk mode for public use
 - `--config CONFIG`: Use custom configuration file
+- `--config-editor`: Launch the interactive terminal configuration editor and exit
 - `--version`: Show version information
+
+### Interactive Configuration Editor
+
+ArgusPI includes a terminal-based configuration editor so you don't need to hand-edit YAML files.
+
+```bash
+python main.py --config-editor
+```
+
+Key capabilities:
+
+- Browse nested sections of `config/default.yaml` (or any file supplied via `--config`).
+- Edit values in place with type-aware prompts; booleans and common enumerations (log level, GUI backend, SIEM protocol, etc.) present pick lists so you can press the matching number instead of typing the value.
+- Add or delete keys and list items, reload from disk, and save changes to the existing file or a new path.
+
+The editor exits immediately after you save (or discard) your changes, making it safe to run on production systems before relaunching the scanner.
 
 ### Auto-Startup Service
 

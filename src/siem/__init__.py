@@ -7,20 +7,33 @@ import json
 import socket
 import logging
 import syslog
+import importlib
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
-import requests
-from threading import Thread
+from typing import Dict, Any, Optional, Protocol, List
+from contextlib import suppress
+from pathlib import Path
+
+requests: Any
+try:
+    requests = importlib.import_module("requests")
+except ImportError:
+    requests = None
+from threading import Thread, Lock
 import queue
 
 logger = logging.getLogger(__name__)
 
 
+class _ConfigLike(Protocol):
+    def get(self, key: str, default: Any = ...) -> Any:
+        ...
+
+
 class SIEMClient:
     """SIEM integration client supporting multiple protocols"""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: _ConfigLike):
         self.config = config
         self.enabled = config.get('siem.enabled', False)
         self.protocol = config.get('siem.protocol', 'syslog').lower()
@@ -36,6 +49,22 @@ class SIEMClient:
         # Message queue for async sending
         self.message_queue = queue.Queue()
         self.worker_thread = None
+
+        # Offline cache configuration
+        self.offline_cache_enabled = bool(config.get('siem.offline_cache.enabled', True))
+        cache_path_cfg = config.get('siem.offline_cache.path', 'logs/siem_offline_cache.jsonl')
+        self.offline_cache_path = Path(cache_path_cfg).expanduser()
+        self.offline_cache_max_records = int(config.get('siem.offline_cache.max_records', 1000))
+        self.offline_cache_flush_interval = int(config.get('siem.offline_cache.flush_interval', 30))
+        self._offline_cache_lock = Lock()
+        self._last_cache_flush = 0.0
+
+        if self.offline_cache_enabled:
+            try:
+                self.offline_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                logger.warning("Unable to prepare SIEM offline cache directory (%s); disabling cache.", exc)
+                self.offline_cache_enabled = False
         
         if self.enabled:
             self._start_worker()
@@ -51,14 +80,25 @@ class SIEMClient:
         while True:
             try:
                 message = self.message_queue.get(timeout=1)
-                if message is None:  # Shutdown signal
-                    break
-                self._send_message_sync(message)
-                self.message_queue.task_done()
             except queue.Empty:
+                self._maybe_flush_offline_cache()
                 continue
-            except Exception as e:
-                logger.error(f"SIEM worker error: {e}")
+
+            if message is None:  # Shutdown signal
+                self.message_queue.task_done()
+                break
+
+            try:
+                self._send_message_sync(message)
+            except Exception as exc:
+                self._handle_send_failure(message, exc)
+            else:
+                self._handle_send_success()
+            finally:
+                self.message_queue.task_done()
+
+        # Attempt a final flush before exiting
+        self._maybe_flush_offline_cache(force=True)
     
     def send_event(self, event_type: str, data: Dict[str, Any], priority: str = 'info'):
         """Send security event to SIEM"""
@@ -142,17 +182,167 @@ class SIEMClient:
     
     def _send_message_sync(self, message: Dict[str, Any]):
         """Send message synchronously using configured protocol"""
+        if self.protocol == 'syslog':
+            self._send_syslog(message)
+        elif self.protocol == 'http':
+            self._send_http(message)
+        elif self.protocol == 'tcp':
+            self._send_tcp(message)
+        else:
+            raise ValueError(f"Unsupported SIEM protocol: {self.protocol}")
+
+    # ------------------------------------------------------------------
+    # Offline cache handling
+    # ------------------------------------------------------------------
+    def _handle_send_failure(self, message: Dict[str, Any], error: Exception):
+        logger.error("Failed to send SIEM message via %s: %s", self.protocol, error)
+        if self.offline_cache_enabled:
+            self._cache_offline_message(message, error)
+
+    def _handle_send_success(self):
+        if self.offline_cache_enabled and self.offline_cache_path.exists():
+            self._maybe_flush_offline_cache()
+
+    def _cache_offline_message(self, message: Dict[str, Any], error: Exception):
+        if not self.offline_cache_enabled:
+            return
+
+        record = {
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'message': message,
+            'protocol': self.protocol,
+            'error': str(error),
+        }
+
+        with self._offline_cache_lock:
+            try:
+                with self.offline_cache_path.open('a', encoding='utf-8') as cache_file:
+                    cache_file.write(json.dumps(record, default=str) + '\n')
+            except Exception as exc:
+                logger.error("Unable to persist SIEM message to offline cache: %s", exc)
+                return
+
+        self._trim_offline_cache()
+
+    def _maybe_flush_offline_cache(self, force: bool = False):
+        if not self.offline_cache_enabled:
+            return
+
+        interval = max(0, self.offline_cache_flush_interval)
+        if not force and interval and (time.time() - self._last_cache_flush) < interval:
+            return
+
+        if not self.offline_cache_path.exists():
+            self._last_cache_flush = time.time()
+            return
+
+        self._flush_offline_cache()
+
+    def _flush_offline_cache(self):
+        records: List[Dict[str, Any]] = []
+
         try:
-            if self.protocol == 'syslog':
-                self._send_syslog(message)
-            elif self.protocol == 'http':
-                self._send_http(message)
-            elif self.protocol == 'tcp':
-                self._send_tcp(message)
+            with self._offline_cache_lock:
+                if not self.offline_cache_path.exists():
+                    self._last_cache_flush = time.time()
+                    return
+
+                try:
+                    with self.offline_cache_path.open('r', encoding='utf-8') as cache_file:
+                        for line in cache_file:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                records.append(json.loads(line))
+                            except json.JSONDecodeError as exc:
+                                logger.debug("Skipping corrupt SIEM cache entry: %s", exc)
+                except FileNotFoundError:
+                    self._last_cache_flush = time.time()
+                    return
+        finally:
+            # Ensure we update the timestamp even if we exit early
+            self._last_cache_flush = time.time()
+
+        if not records:
+            with self._offline_cache_lock:
+                with suppress(FileNotFoundError):
+                    self.offline_cache_path.unlink()
+            return
+
+        remaining_records: List[Dict[str, Any]] = []
+        flushed = 0
+
+        for index, record in enumerate(records):
+            message = record.get('message')
+            if not message:
+                continue
+
+            try:
+                self._send_message_sync(message)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to flush cached SIEM message (%d remaining): %s",
+                    len(records) - index,
+                    exc
+                )
+                remaining_records.extend(records[index:])
+                break
             else:
-                logger.error(f"Unsupported SIEM protocol: {self.protocol}")
-        except Exception as e:
-            logger.error(f"Failed to send SIEM message via {self.protocol}: {e}")
+                flushed += 1
+
+        if flushed:
+            logger.info("Flushed %d cached SIEM message(s) to SIEM backend", flushed)
+
+        with self._offline_cache_lock:
+            if remaining_records:
+                try:
+                    with self.offline_cache_path.open('w', encoding='utf-8') as cache_file:
+                        for record in remaining_records:
+                            cache_file.write(json.dumps(record, default=str) + '\n')
+                except Exception as exc:
+                    logger.error("Unable to rewrite SIEM offline cache: %s", exc)
+            else:
+                with suppress(FileNotFoundError):
+                    self.offline_cache_path.unlink()
+
+    def _trim_offline_cache(self):
+        if not self.offline_cache_enabled:
+            return
+
+        max_records = self.offline_cache_max_records
+        if max_records <= 0:
+            return
+
+        with self._offline_cache_lock:
+            try:
+                with self.offline_cache_path.open('r', encoding='utf-8') as cache_file:
+                    records = []
+                    for line in cache_file:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            records.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except FileNotFoundError:
+                return
+            except Exception as exc:
+                logger.debug("Unable to trim SIEM offline cache: %s", exc)
+                return
+
+            if len(records) <= max_records:
+                return
+
+            records = records[-max_records:]
+
+            try:
+                with self.offline_cache_path.open('w', encoding='utf-8') as cache_file:
+                    for record in records:
+                        cache_file.write(json.dumps(record, default=str) + '\n')
+            except Exception as exc:
+                logger.error("Unable to truncate SIEM offline cache: %s", exc)
     
     def _send_syslog(self, message: Dict[str, Any]):
         """Send message via syslog"""
@@ -176,6 +366,8 @@ class SIEMClient:
     
     def _send_http(self, message: Dict[str, Any]):
         """Send message via HTTP POST"""
+        if requests is None:
+            raise RuntimeError("The 'requests' package is required for HTTP SIEM protocol support")
         url = f"http://{self.server}:{self.port}/events"
         headers = {'Content-Type': 'application/json'}
         
@@ -229,6 +421,7 @@ class SIEMClient:
         if self.worker_thread and self.worker_thread.is_alive():
             self.message_queue.put(None)  # Shutdown signal
             self.worker_thread.join(timeout=2)
+        self._maybe_flush_offline_cache(force=True)
 
 
 # Convenience functions for common events

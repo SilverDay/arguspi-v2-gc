@@ -6,6 +6,10 @@ Provides a simplified, full-screen interface for public use
 import time
 import threading
 import os
+import subprocess
+import signal
+import shutil
+from contextlib import suppress
 from typing import Optional, Callable, Dict, Any, List
 from pathlib import Path
 import logging
@@ -37,6 +41,35 @@ class KioskWindow:
         self.waiting_for_usb = True
         self.scanned_device = None  # Track which device was scanned
         self.auto_scan_enabled = config.get('kiosk.auto_scan', True)
+
+        self.watchdog_enabled = config.get('kiosk.watchdog.enabled', True)
+        self.watchdog_interval = config.get('kiosk.watchdog.interval', 5)
+        self.watchdog_timeout = config.get('kiosk.watchdog.timeout', 30)
+        self.watchdog_action = (config.get('kiosk.watchdog.action', 'restart-service') or 'restart-service').lower()
+        self.watchdog_service = config.get('kiosk.watchdog.service_name', 'arguspi')
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._last_watchdog_heartbeat = time.time()
+        self._watchdog_triggered = False
+
+        terminal_lock_defaults = {
+            'extended': True,
+            'disable_vt_switch': True,
+            'disable_sysrq': False,
+        }
+        terminal_lock_config = config.get('kiosk.terminal_lock', {}) or {}
+        if not isinstance(terminal_lock_config, dict):
+            terminal_lock_config = {}
+
+        self.lock_extended = terminal_lock_config.get('extended', terminal_lock_defaults['extended'])
+        self.lock_disable_vt = terminal_lock_config.get('disable_vt_switch', terminal_lock_defaults['disable_vt_switch'])
+        self.lock_disable_sysrq = terminal_lock_config.get('disable_sysrq', terminal_lock_defaults['disable_sysrq'])
+
+        self._vt_switch_locked = False
+        self._vt_switch_original: Optional[str] = None
+        self._sysrq_original: Optional[str] = None
+        self._orig_signal_handlers: Dict[int, Any] = {}
+        self._stty_state: Optional[str] = None
         
         logger.info(f"Kiosk GUI initialized for station: {self.station_name}")
     
@@ -47,6 +80,7 @@ class KioskWindow:
         
         # Hide cursor and clear screen for full-screen experience
         self._setup_kiosk_display()
+        self._start_watchdog()
         
         try:
             # Show welcome screen
@@ -56,6 +90,8 @@ class KioskWindow:
             # Main kiosk loop
             while self.running:
                 try:
+                    self._touch_watchdog()
+                    
                     if self.waiting_for_usb and not self.scan_in_progress:
                         self._show_waiting_screen()
                     elif self.scan_in_progress:
@@ -78,27 +114,40 @@ class KioskWindow:
         except Exception as e:
             logger.error(f"Kiosk GUI error: {e}", exc_info=True)
         finally:
+            self._stop_watchdog()
             self._cleanup_kiosk_display()
             self.running = False
     
     def _setup_kiosk_display(self):
         """Setup the display for kiosk mode"""
         try:
-            # Clear screen and hide cursor
-            os.system('clear')
-            print('\033[?25l', end='', flush=True)
-            
-            # Set terminal title for kiosk mode
-            print('\033]0;ArgusPI v2 - Kiosk Mode\007', end='', flush=True)
-            
-            # Disable terminal echo and canonical mode for security
+            self._capture_stty_state()
+            print('\033[?25h', end='', flush=True)
+
+            self._restore_signal_handlers()
+            self._unlock_vt_switch()
+            self._restore_sysrq()
+            self._restore_stty_state()
+
+            # Clear screen on exit
+            self._clear_screen()
+
+            self._apply_signal_locks()
+
             if self.config.get('kiosk.prevent_exit', True):
-                os.system('stty -echo -icanon 2>/dev/null || true')
-            
-            # Try to hide system information
+                if self.lock_extended:
+                    self._enforce_extended_terminal_lock()
+                else:
+                    self._run_shell_command('stty -echo -icanon 2>/dev/null || true')
+
             if self.config.get('kiosk.hide_system_info', True):
-                # Disable Ctrl+C, Ctrl+Z etc
-                os.system('stty intr undef susp undef quit undef 2>/dev/null || true')
+                self._run_shell_command('stty intr undef susp undef quit undef 2>/dev/null || true')
+
+            if self.lock_disable_vt:
+                self._lock_vt_switch()
+
+            if self.lock_disable_sysrq:
+                self._disable_sysrq()
                 
         except Exception as e:
             logger.warning(f"Could not setup kiosk display: {e}")
@@ -275,6 +324,227 @@ class KioskWindow:
         print("    " + "=" * 60)
         print("\n" * 4)
     
+    def _start_watchdog(self):
+        """Start kiosk watchdog thread."""
+        if not self.watchdog_enabled:
+            return
+
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+
+        self._watchdog_stop.clear()
+        self._watchdog_triggered = False
+        self._last_watchdog_heartbeat = time.time()
+
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop,
+            name="arguspi-kiosk-watchdog",
+            daemon=True
+        )
+        self._watchdog_thread.start()
+
+    def _stop_watchdog(self):
+        """Stop kiosk watchdog thread."""
+        if not self._watchdog_thread:
+            return
+
+        self._watchdog_stop.set()
+        self._watchdog_thread.join(timeout=max(2, int(self.watchdog_interval) + 1))
+        self._watchdog_thread = None
+
+    def _touch_watchdog(self):
+        """Update watchdog heartbeat timestamp."""
+        if self.watchdog_enabled:
+            self._last_watchdog_heartbeat = time.time()
+
+    def _watchdog_loop(self):
+        """Background loop that monitors kiosk health."""
+        logger.debug("Kiosk watchdog thread started")
+
+        while not self._watchdog_stop.wait(self.watchdog_interval):
+            if self._watchdog_triggered or not self.watchdog_enabled:
+                continue
+
+            elapsed = time.time() - self._last_watchdog_heartbeat
+            if elapsed > self.watchdog_timeout:
+                logger.error(
+                    "Kiosk watchdog timeout exceeded (%.1fs > %.1fs). Initiating recovery.",
+                    elapsed,
+                    self.watchdog_timeout
+                )
+                self._watchdog_triggered = True
+                self._handle_watchdog_timeout()
+                break
+
+        logger.debug("Kiosk watchdog thread exiting")
+
+    def _handle_watchdog_timeout(self):
+        """Perform configured watchdog action."""
+        self._watchdog_stop.set()
+
+        action = self.watchdog_action
+        if action == 'restart-service':
+            if not self._restart_service(self.watchdog_service):
+                logger.error(
+                    "Watchdog failed to restart service '%s'. Forcing process exit for supervisor recovery.",
+                    self.watchdog_service
+                )
+                os._exit(1)
+
+            logger.info("Watchdog restarted service '%s'; exiting process for clean restart.", self.watchdog_service)
+            os._exit(0)
+
+        if action == 'exit':
+            logger.error("Watchdog exiting process to allow external restart.")
+            os._exit(1)
+
+        logger.warning("Unknown watchdog action '%s'; exiting as a safety fallback.", action)
+        os._exit(1)
+
+    def _restart_service(self, service_name: str) -> bool:
+        """Attempt to restart the system service managing ArgusPI."""
+        systemctl_path = shutil.which('systemctl')
+        if not systemctl_path:
+            logger.error("systemctl not available; cannot restart service '%s'.", service_name)
+            return False
+
+        cmd: List[str] = [systemctl_path, 'restart', service_name]
+        geteuid = getattr(os, 'geteuid', None)
+        if callable(geteuid) and geteuid() != 0:
+            cmd.insert(0, 'sudo')
+
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True
+        except subprocess.CalledProcessError as exc:
+            logger.error("Service restart command failed: %s", exc)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Unexpected error restarting service: %s", exc)
+        return False
+
+    def _run_shell_command(self, command: str):
+        """Run a shell command suppressing output (best-effort)."""
+        subprocess.run(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+    def _capture_stty_state(self):
+        """Save current terminal state to restore later."""
+        try:
+            result = subprocess.check_output(['stty', '-g'], stderr=subprocess.DEVNULL)
+            self._stty_state = result.decode().strip()
+        except Exception:
+            self._stty_state = None
+
+    def _restore_stty_state(self):
+        """Restore saved terminal state."""
+        if self._stty_state:
+            with suppress(Exception):
+                subprocess.run(['stty', self._stty_state], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            self._run_shell_command('stty sane 2>/dev/null || true')
+
+    def _enforce_extended_terminal_lock(self):
+        """Apply additional terminal locks beyond basic echo/canonical settings."""
+        lock_commands = [
+            'stty -echo -icanon -isig -ixoff -ixon min 1 time 0 2>/dev/null || true',
+            'stty intr undef quit undef susp undef stop undef start undef eof undef eol undef eol2 undef swtch undef 2>/dev/null || true',
+            'stty werase undef kill undef rprnt undef lnext undef discard undef 2>/dev/null || true',
+        ]
+        for cmd in lock_commands:
+            self._run_shell_command(cmd)
+
+    def _apply_signal_locks(self):
+        """Ignore interactive terminal signals when kiosk prevent-exit is enabled."""
+        if not self.config.get('kiosk.prevent_exit', True):
+            return
+
+        signals_to_lock = [signal.SIGINT]
+        for sig_name in ('SIGTSTP', 'SIGQUIT'):
+            sig_obj = getattr(signal, sig_name, None)
+            if sig_obj is not None:
+                signals_to_lock.append(sig_obj)
+
+        for sig_obj in signals_to_lock:
+            try:
+                self._orig_signal_handlers[sig_obj] = signal.getsignal(sig_obj)
+                signal.signal(sig_obj, signal.SIG_IGN)
+            except Exception as exc:
+                logger.debug("Unable to override signal %s: %s", sig_obj, exc)
+
+    def _restore_signal_handlers(self):
+        """Restore original signal handlers after kiosk shutdown."""
+        for sig_obj, handler in self._orig_signal_handlers.items():
+            with suppress(Exception):
+                signal.signal(sig_obj, handler)
+        self._orig_signal_handlers.clear()
+
+    def _lock_vt_switch(self):
+        """Prevent virtual-terminal switching (Ctrl+Alt+Fn)."""
+        lock_path = Path('/sys/devices/virtual/tty/tty0/lock_vt_switch')
+        if not lock_path.exists():
+            return
+
+        try:
+            self._vt_switch_original = lock_path.read_text().strip()
+        except Exception:
+            self._vt_switch_original = None
+
+        try:
+            lock_path.write_text('1')
+            self._vt_switch_locked = True
+        except PermissionError:
+            logger.debug("Insufficient permissions to lock VT switching.")
+        except Exception as exc:
+            logger.debug("Failed to lock VT switching: %s", exc)
+
+    def _unlock_vt_switch(self):
+        """Restore virtual-terminal switching state."""
+        if not self._vt_switch_locked:
+            return
+
+        lock_path = Path('/sys/devices/virtual/tty/tty0/lock_vt_switch')
+        try:
+            value = self._vt_switch_original if self._vt_switch_original is not None else '0'
+            lock_path.write_text(value)
+        except Exception as exc:
+            logger.debug("Failed to restore VT switching state: %s", exc)
+        finally:
+            self._vt_switch_locked = False
+            self._vt_switch_original = None
+
+    def _disable_sysrq(self):
+        """Disable magic SysRq key if configured."""
+        sysrq_path = Path('/proc/sys/kernel/sysrq')
+        if not sysrq_path.exists():
+            return
+
+        try:
+            self._sysrq_original = sysrq_path.read_text().strip()
+        except Exception:
+            self._sysrq_original = None
+
+        try:
+            sysrq_path.write_text('0')
+        except PermissionError:
+            logger.debug("Insufficient permissions to disable sysrq.")
+        except Exception as exc:
+            logger.debug("Failed to disable sysrq: %s", exc)
+
+    def _restore_sysrq(self):
+        """Restore SysRq state if it was changed."""
+        if self._sysrq_original is None:
+            return
+
+        sysrq_path = Path('/proc/sys/kernel/sysrq')
+        if not sysrq_path.exists():
+            return
+
+        try:
+            sysrq_path.write_text(self._sysrq_original)
+        except Exception as exc:
+            logger.debug("Failed to restore sysrq state: %s", exc)
+        finally:
+            self._sysrq_original = None
+
     def _create_progress_bar(self, percentage: float, width: int = 40) -> str:
         """Create a text-based progress bar"""
         filled = int(width * percentage / 100)
@@ -287,6 +557,8 @@ class KioskWindow:
     
     def on_usb_connected(self, device_info):
         """Handle USB device connection in kiosk mode"""
+        self._touch_watchdog()
+
         if device_info not in self.connected_devices:
             self.connected_devices.append(device_info)
         
@@ -303,6 +575,8 @@ class KioskWindow:
     
     def on_usb_disconnected(self, device_info):
         """Handle USB device disconnection in kiosk mode"""
+        self._touch_watchdog()
+
         if device_info in self.connected_devices:
             self.connected_devices.remove(device_info)
         
@@ -331,6 +605,7 @@ class KioskWindow:
     
     def _reset_kiosk_state(self):
         """Reset kiosk state for next user"""
+        self._touch_watchdog()
         self.current_scan_result = None
         self.scan_in_progress = False
         self.waiting_for_usb = True
@@ -342,6 +617,7 @@ class KioskWindow:
     
     def _start_auto_scan(self, device_info):
         """Start automatic scan of connected device"""
+        self._touch_watchdog()
         if not device_info.mount_point:
             logger.warning(f"Cannot scan device {device_info}: no mount point")
             return
@@ -357,6 +633,7 @@ class KioskWindow:
         if not progress_info:
             return
         
+        self._touch_watchdog()
         self.scan_progress_info = progress_info
         
         # Log progress occasionally
@@ -368,6 +645,7 @@ class KioskWindow:
     
     def on_scan_complete(self, scan_result):
         """Handle scan completion in kiosk mode"""
+        self._touch_watchdog()
         self.scan_in_progress = False
         
         logger.info(f"Kiosk scan completed: {scan_result.scanned_files} files, {scan_result.infected_files} threats")
@@ -387,6 +665,7 @@ class KioskWindow:
     
     def on_scan_error(self, error_message: str):
         """Handle scan error in kiosk mode"""
+        self._touch_watchdog()
         self.scan_in_progress = False
         logger.error(f"Kiosk scan error: {error_message}")
         

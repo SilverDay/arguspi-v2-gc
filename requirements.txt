@@ -2,11 +2,12 @@
 psutil>=5.9.0
 watchdog>=3.0.0
 requests>=2.31.0
-pyclamd>=0.5.0
+# pyclamd 0.4.0 is the latest release available on PyPI/piwheels
+pyclamd==0.4.0
 
-# GUI dependencies
-tkinter
+# GUI dependencies (install Tk via system packages, e.g., sudo apt install python3-tk)
 pillow>=10.0.0
+PySide6>=6.6.0
 
 # System integration
 pyudev>=0.24.0

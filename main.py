@@ -34,6 +34,7 @@ Examples:
   python3 main.py                   # Start in normal console mode
   python3 main.py --kiosk           # Start in kiosk mode
   python3 main.py --config custom.yaml  # Use custom config file
+    python3 main.py --config-editor   # Launch interactive configuration editor
         """
     )
     
@@ -54,6 +55,12 @@ Examples:
         action='version',
         version='ArgusPI v2.0.0'
     )
+
+    parser.add_argument(
+        '--config-editor',
+        action='store_true',
+        help='Launch the terminal-based configuration editor and exit'
+    )
     
     return parser.parse_args()
 
@@ -69,6 +76,13 @@ def main():
     
     # Setup logging
     setup_logging()
+
+    if args.config_editor:
+        from config.terminal_editor import TerminalConfigEditor
+
+        editor = TerminalConfigEditor(args.config)
+        editor.run()
+        return
     
     try:
         # Check for auto-start configuration if not explicitly in kiosk mode

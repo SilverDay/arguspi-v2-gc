@@ -9,11 +9,13 @@ Type=simple
 User=pi
 Group=pi
 WorkingDirectory=/opt/arguspi
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=VIRTUAL_ENV=/opt/arguspi/.venv
+Environment=PATH=/opt/arguspi/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONPATH=/opt/arguspi/src
-ExecStart=/usr/bin/python3 /opt/arguspi/main.py
+ExecStart=/opt/arguspi/.venv/bin/python /opt/arguspi/main.py
 Restart=always
-RestartSec=10
+RestartSec=5
+StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 KillMode=process

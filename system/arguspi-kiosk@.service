@@ -1,0 +1,30 @@
+[Unit]
+Description=ArgusPI v2 Kiosk (%I)
+After=systemd-user-sessions.service
+After=network-online.target
+Wants=network-online.target
+Conflicts=getty@%i.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/opt/arguspi
+Environment=VIRTUAL_ENV=/opt/arguspi/.venv
+Environment=PATH=/opt/arguspi/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/opt/arguspi/src
+TTYPath=/dev/%I
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+ExecStart=/opt/arguspi/.venv/bin/python /opt/arguspi/main.py --kiosk
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

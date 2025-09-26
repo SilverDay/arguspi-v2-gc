@@ -1,0 +1,2 @@
+*.sh text eol=lf
+system/*.rules text eol=lf

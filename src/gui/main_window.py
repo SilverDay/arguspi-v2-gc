@@ -32,9 +32,19 @@ class MainWindow:
         self.connected_devices = []
         self.current_scan_info = None
         self.scan_in_progress = False
+        self._progress_line_active = False
         
         logger.info(f"GUI initialized in console mode for station: {self.station_name}")
     
+    def _read_input(self, prompt: str = "") -> Optional[str]:
+        """Read user input while handling EOF gracefully."""
+        try:
+            return input(prompt)
+        except EOFError:
+            logger.warning("Input stream closed; exiting console interface")
+            self.running = False
+            return None
+
     def run(self):
         """Run the main GUI loop - console version"""
         self.running = True
@@ -44,7 +54,10 @@ class MainWindow:
         try:
             while self.running:
                 self._show_main_menu()
-                choice = input("Select option: ").strip()
+                choice = self._read_input("Select option: ")
+                if choice is None:
+                    break
+                choice = choice.strip()
                 
                 if choice == '1':
                     self._scan_menu()
@@ -94,7 +107,8 @@ class MainWindow:
         """Show scan options"""
         if not self.connected_devices:
             print("\nNo USB devices connected.")
-            input("Press Enter to continue...")
+            if self._read_input("Press Enter to continue...") is None:
+                return
             return
             
         print("\nConnected USB Devices:")
@@ -102,7 +116,10 @@ class MainWindow:
             print(f"{i}. {device}")
         
         try:
-            choice = input("Select device to scan (number): ").strip()
+            choice = self._read_input("Select device to scan (number): ")
+            if choice is None:
+                return
+            choice = choice.strip()
             if choice.isdigit():
                 index = int(choice) - 1
                 if 0 <= index < len(self.connected_devices):
@@ -115,7 +132,8 @@ class MainWindow:
         except ValueError:
             print("Invalid input.")
         
-        input("Press Enter to continue...")
+        if self._read_input("Press Enter to continue...") is None:
+            return
     
     def _start_scan(self, device_info):
         """Start scanning a device"""
@@ -123,11 +141,13 @@ class MainWindow:
             print("Scan already in progress!")
             return
             
+        self._progress_line_active = False
         print(f"\nStarting scan of: {device_info}")
         
         if self.on_scan_request:
             device_path = getattr(device_info, 'mount_point', str(device_info))
             if device_path:
+                self.scan_in_progress = True
                 self.on_scan_request(device_path)
             else:
                 print("Error: Device not properly mounted")
@@ -146,7 +166,7 @@ class MainWindow:
             for i, device in enumerate(self.connected_devices, 1):
                 print(f"{i}. {device}")
                 
-        input("\nPress Enter to continue...")
+        self._read_input("\nPress Enter to continue...")
     
     def _show_scan_results(self):
         """Show recent scan results"""
@@ -160,6 +180,9 @@ class MainWindow:
             print(f"  Files scanned: {info.get('scanned_files', 0)}")
             print(f"  Threats found: {info.get('threats_found', 0)}")
             print(f"  Status: {info.get('status', 'Unknown')}")
+            device_path = info.get('device_path')
+            if device_path:
+                print(f"  Device: {device_path}")
             
             if info.get('threats'):
                 print("\nThreats detected:")
@@ -168,7 +191,7 @@ class MainWindow:
         else:
             print("No scan results available.")
             
-        input("\nPress Enter to continue...")
+        self._read_input("\nPress Enter to continue...")
     
     def _show_settings(self):
         """Show current settings"""
@@ -181,7 +204,7 @@ class MainWindow:
         print(f"Read-only mode: {self.config.get('usb.read_only', True)}")
         print(f"Log level: {self.config.get('logging.level', 'INFO')}")
         
-        input("\nPress Enter to continue...")
+        self._read_input("\nPress Enter to continue...")
     
     def on_usb_connected(self, device_info):
         """Handle USB device connection"""
@@ -225,27 +248,39 @@ class MainWindow:
             
             if total > 0:
                 percentage = (scanned / total) * 100
-                print(f"\\rScanning: {scanned}/{total} ({percentage:.1f}%) - Threats: {threats}", end='', flush=True)
+                prefix = '\n' if not self._progress_line_active else '\r'
+                print(f"{prefix}Scanning: {scanned}/{total} ({percentage:.1f}%) - Threats: {threats}", end='', flush=True)
+                self._progress_line_active = True
             
             # Store current scan info
             self.current_scan_info = progress_info
+        else:
+            self._progress_line_active = False
     
     def on_scan_complete(self, scan_result):
         """Handle scan completion"""
         self.scan_in_progress = False
+
+        if self._progress_line_active:
+            print()
+            self._progress_line_active = False
         
-        print(f"\\n\\nScan completed!")
+        print("\n\nScan completed!")
         print(f"Files scanned: {scan_result.scanned_files}")
+        if hasattr(scan_result, 'clamav_files_scanned'):
+            print(f"ClamAV files scanned: {scan_result.clamav_files_scanned}")
         print(f"Threats found: {scan_result.infected_files}")
         print(f"Scan time: {scan_result.scan_time:.2f} seconds")
+        if getattr(scan_result, 'device_path', ''):
+            print(f"Device path: {scan_result.device_path}")
         
         if scan_result.threats:
-            print("\\nThreats detected:")
+            print("\nThreats detected:")
             for threat in scan_result.threats:
                 print(f"  - {threat['file']}: {threat['threat']}")
         
         if scan_result.errors:
-            print(f"\\nErrors encountered: {len(scan_result.errors)}")
+            print(f"\nErrors encountered: {len(scan_result.errors)}")
         
         # Store results
         self.current_scan_info = {
@@ -253,15 +288,17 @@ class MainWindow:
             'threats_found': scan_result.infected_files,
             'status': 'Completed' if scan_result.completed else 'Stopped',
             'threats': scan_result.threats,
-            'scan_time': scan_result.scan_time
+            'scan_time': scan_result.scan_time,
+            'device_path': getattr(scan_result, 'device_path', ''),
+            'clamav_files_scanned': getattr(scan_result, 'clamav_files_scanned', 0)
         }
         
-        input("\\nPress Enter to continue...")
+        self._read_input("\nPress Enter to continue...")
     
     def on_scan_error(self, error_message: str):
         """Handle scan error"""
         self.scan_in_progress = False
-        print(f"\\n\\nScan error: {error_message}")
+        print(f"\n\nScan error: {error_message}")
         
         self.current_scan_info = {
             'scanned_files': 0,
@@ -270,4 +307,4 @@ class MainWindow:
             'error': error_message
         }
         
-        input("Press Enter to continue...")
+        self._read_input("Press Enter to continue...")

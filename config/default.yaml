@@ -2,21 +2,21 @@
 app:
   name: "ArgusPI v2"
   version: "2.0.0"
-  debug: true
-  
+  debug: false
+
 # Station identification
 station:
-  name: "ArgusPI Scanner"  # Custom name for this scan station
-  location: ""             # Optional location description
-  auto_start: false        # Auto-start kiosk mode on boot
-  
+  name: "ArgusPI Scanner" # Custom name for this scan station
+  location: "" # Optional location description
+  auto_start: false # Auto-start kiosk mode on boot
+
 # USB Detection settings
 usb:
   auto_detect: true
   mount_point: "/media/arguspi"
   read_only: true
   supported_filesystems: ["vfat", "ntfs", "ext2", "ext3", "ext4"]
-  
+
 # Scanning configuration
 scanner:
   engines:
@@ -25,36 +25,53 @@ scanner:
       database_update: true
       max_file_size: "100M"
       max_scan_size: "1000M"
+      socket: "/var/run/clamav/clamd.ctl" # Adjust if your clamd socket lives elsewhere
+      host: "127.0.0.1" # Used when socket is not available
+      port: 3310
+      cli_path: "clamdscan"
+      cli_args:
+        - "--fdpass"
+        - "--infected"
+      prefer_cli: false
     virustotal:
       enabled: true
-      api_key: ""  # Set via environment variable VT_API_KEY
+      api_key: "" # Set via VT_API_KEY environment variable
       timeout: 30
       max_daily_requests: 500
-      
-  # File types to scan
-  scan_types: ["exe", "dll", "bat", "cmd", "scr", "com", "pif", "jar", "zip", "rar", "7z", "inf", "txt"]
+  scan_types: ["*"] # Use ["*"] or [] to scan all file types, or list extensions (without dots)
   exclude_patterns: ["*.log", "System Volume Information", "$RECYCLE.BIN"]
-  
+
 # GUI Configuration
 gui:
-  mode: "simple"  # simple or expert
-  theme: "light"  # light or dark
-  orientation: "auto"  # auto, portrait, landscape
+  backend: "console" # console, qt, kiosk
+  mode: "simple" # simple or expert
+  theme: "light" # light or dark
+  orientation: "auto" # auto, portrait, landscape
   touchscreen: true
   fullscreen: true
-  progress_update_interval: 1.0  # seconds
+  progress_update_interval: 1.0 # seconds
 
 # Kiosk Mode Configuration
 kiosk:
   enabled: false
-  auto_scan: true  # Automatically scan USB devices when connected
-  show_welcome: true  # Show welcome screen in kiosk mode
-  result_timeout: 0  # Keep results displayed until USB removed (0 = indefinite)
-  allow_manual_scan: false  # Allow manual scan initiation in kiosk mode
-  hide_system_info: true  # Hide system information that could reveal OS details
-  prevent_exit: true  # Prevent accidental exit from kiosk mode
-  screen_saver_timeout: 300  # Screen saver timeout in seconds (0 = disabled)
-  
+  auto_scan: true # Automatically scan USB devices when connected
+  show_welcome: true # Show welcome screen in kiosk mode
+  result_timeout: 0 # Keep results displayed until USB removed (0 = indefinite)
+  allow_manual_scan: false # Allow manual scan initiation in kiosk mode
+  hide_system_info: true # Hide system information that could reveal OS details
+  prevent_exit: true # Prevent accidental exit from kiosk mode
+  screen_saver_timeout: 300 # Screen saver timeout in seconds (0 = disabled)
+  watchdog:
+    enabled: true
+    interval: 5
+    timeout: 30
+    action: "restart-service" # restart-service, exit
+    service_name: "arguspi"
+  terminal_lock:
+    extended: true
+    disable_vt_switch: true
+    disable_sysrq: false
+
 # Logging configuration
 logging:
   level: "INFO"
@@ -62,7 +79,7 @@ logging:
   max_size: "10M"
   backup_count: 5
   console_output: true
-  
+
 # Network settings
 network:
   check_connectivity: true
@@ -73,12 +90,12 @@ network:
 # SIEM Integration
 siem:
   enabled: false
-  protocol: "syslog"        # syslog, http, tcp
+  protocol: "syslog" # syslog, http, tcp
   server: "localhost"
   port: 514
-  facility: "local0"        # For syslog protocol
-  severity: "info"          # For syslog protocol
-  format: "json"            # json, cef, leef
+  facility: "local0" # For syslog protocol
+  severity: "info" # For syslog protocol
+  format: "json" # json, cef, leef
   events:
     scan_start: true
     scan_complete: true
@@ -87,3 +104,8 @@ siem:
     usb_disconnected: true
     system_errors: true
   timeout: 5
+  offline_cache:
+    enabled: true
+    path: "logs/siem_offline_cache.jsonl"
+    max_records: 1000
+    flush_interval: 30

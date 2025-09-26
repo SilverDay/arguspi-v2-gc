@@ -1,0 +1,3 @@
+# Disable desktop auto-mounting for USB storage devices managed by ArgusPI
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{UDISKS_AUTO}="0"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{UDISKS_IGNORE}="1"

@@ -5,7 +5,7 @@ Main ArgusPI v2 Application
 import time
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 import logging
 
 from config.manager import Config
@@ -25,10 +25,10 @@ class ArgusApplication:
     def __init__(self, config_file: Optional[str] = None, kiosk_mode: bool = False):
         self.config = Config(config_file)
         self.kiosk_mode = kiosk_mode
-        self.usb_detector = None
-        self.scan_engine = None
-        self.gui = None
-        self.siem_client = None
+        self.usb_detector: Optional[USBDetector] = None
+        self.scan_engine: Optional[ScanEngine] = None
+        self.gui: Optional[Union[MainWindow, KioskWindow]] = None
+        self.siem_client: Optional[SIEMClient] = None
         self.running = False
         
         # Override config if kiosk mode is enabled via command line
@@ -53,11 +53,28 @@ class ArgusApplication:
         # Initialize scan engine
         self.scan_engine = ScanEngine(self.config)
         
-        # Initialize GUI based on mode
+        # Initialize GUI based on configured backend
+        gui_backend = (self.config.get('gui.backend', 'console') or 'console').lower()
+
         if self.config.get('kiosk.enabled', False):
             logger.info("Initializing Kiosk Mode GUI")
             self.gui = KioskWindow(self.config, self.scan_engine)
+        elif gui_backend == 'qt':
+            try:
+                from gui.qt_window import QtMainWindow
+
+                logger.info("Initializing Qt GUI backend")
+                self.gui = QtMainWindow(self.config, self.scan_engine)
+            except Exception as exc:
+                logger.error(
+                    "Failed to initialize Qt GUI backend (%s). Falling back to console GUI.",
+                    exc,
+                    exc_info=True
+                )
+                self.gui = MainWindow(self.config, self.scan_engine)
         else:
+            if gui_backend not in {'console', 'qt'}:
+                logger.warning("Unknown GUI backend '%s'. Falling back to console mode.", gui_backend)
             logger.info("Initializing Console GUI")
             self.gui = MainWindow(self.config, self.scan_engine)
             
@@ -75,19 +92,25 @@ class ArgusApplication:
         try:
             self.initialize()
             self.running = True
+
+            if not self.usb_detector or not self.scan_engine or not self.gui:
+                raise RuntimeError("Application components failed to initialize")
+
+            usb_detector = self.usb_detector
+            gui = self.gui
             
             # Do an initial USB scan synchronously to populate devices
             logger.debug("Performing initial USB device scan...")
-            self.usb_detector._scan_existing_devices()
+            usb_detector._scan_existing_devices()
             
             # Start USB detection in background thread
-            usb_thread = threading.Thread(target=self.usb_detector.start_monitoring, daemon=True)
+            usb_thread = threading.Thread(target=usb_detector.start_monitoring, daemon=True)
             usb_thread.start()
             
             logger.info("Application started successfully")
             
             # Start GUI main loop
-            self.gui.run()
+            gui.run()
             
         except Exception as e:
             logger.error(f"Application failed to start: {e}", exc_info=True)
@@ -146,6 +169,13 @@ class ArgusApplication:
     def _handle_scan_request(self, device_path):
         """Handle scan request from GUI"""
         logger.info(f"Scan requested for device: {device_path}")
+
+        if not self.scan_engine or not self.gui:
+            logger.error("Scan requested before components were initialized")
+            return
+
+        scan_engine = self.scan_engine
+        gui = self.gui
         
         # Send SIEM event for scan start
         if self.siem_client:
@@ -156,9 +186,9 @@ class ArgusApplication:
         
         def scan_worker():
             try:
-                self.scan_engine.scan_device(
+                scan_engine.scan_device(
                     device_path,
-                    progress_callback=self.gui.update_scan_progress,
+                    progress_callback=gui.update_scan_progress,
                     completion_callback=self._handle_scan_complete
                 )
             except Exception as e:
@@ -171,7 +201,7 @@ class ArgusApplication:
                         'device_path': device_path,
                         'action': 'scan_error'
                     }, 'error')
-                self.gui.on_scan_error(str(e))
+                gui.on_scan_error(str(e))
         
         # Start scan in background thread
         scan_thread = threading.Thread(target=scan_worker, daemon=True)
@@ -189,8 +219,9 @@ class ArgusApplication:
         if self.siem_client:
             # Send scan complete event
             priority = 'high' if scan_result.infected_files > 0 else 'info'
+            device_path = getattr(scan_result, 'device_path', None) or 'unknown'
             self.siem_client.send_event('scan_complete', {
-                'device_path': getattr(scan_result, 'device_path', 'unknown'),
+                'device_path': device_path,
                 'scanned_files': scan_result.scanned_files,
                 'threats_found': scan_result.infected_files,
                 'scan_time_seconds': scan_result.scan_time,
@@ -200,7 +231,7 @@ class ArgusApplication:
             # Send threats found event if threats detected
             if scan_result.infected_files > 0:
                 self.siem_client.send_event('threats_found', {
-                    'device_path': getattr(scan_result, 'device_path', 'unknown'),
+                    'device_path': device_path,
                     'threat_count': scan_result.infected_files,
                     'threats': [str(threat) for threat in scan_result.threats],
                     'action': 'threats_detected'

@@ -5,11 +5,19 @@ USB device detection and management for ArgusPI v2
 import os
 import time
 import subprocess
-import threading
 from pathlib import Path
-from typing import Optional, Callable, Dict, List
+from typing import Optional, Callable, Dict, List, Any
 import json
 import logging
+import importlib
+import importlib.util
+
+_pyudev_spec = importlib.util.find_spec("pyudev")
+if _pyudev_spec is None:  # pragma: no cover - pyudev required at runtime
+    raise RuntimeError("pyudev library is required for USB detection. Please install pyudev.")
+
+pyudev = importlib.import_module("pyudev")
+_PYUDEV_DEVICE_NOT_FOUND = getattr(pyudev, "DeviceNotFoundError", Exception)
 
 # Use built-in logging until our custom logger is set up  
 logger = logging.getLogger(__name__)
@@ -57,6 +65,9 @@ class USBDetector:
         self.mount_base = Path(config.get('usb.mount_point', '/media/arguspi'))
         self.read_only = config.get('usb.read_only', True)
         self.supported_fs = config.get('usb.supported_filesystems', ['vfat', 'ntfs', 'ext2', 'ext3', 'ext4'])
+        self._context = pyudev.Context()
+        self._monitor = None
+        self._observer: Optional[Any] = None
         
         # Ensure mount base directory exists (use local directory if /media fails)
         try:
@@ -74,41 +85,59 @@ class USBDetector:
     def start_monitoring(self):
         """Start monitoring for USB device changes"""
         logger.info("Starting USB device monitoring...")
+
+        if self.monitoring:
+            logger.debug("USB monitoring already active")
+            return
+
         self.monitoring = True
-        
-        # Initial scan for existing devices
+
+        try:
+            self._monitor = pyudev.Monitor.from_netlink(self._context)
+            # Listen for all block device events; handler will filter for USB partitions
+            self._monitor.filter_by("block")
+            observer = pyudev.MonitorObserver(
+                self._monitor,
+                callback=self._handle_udev_event,
+                name="arguspi-usb-monitor",
+                daemon=True
+            )
+            observer.start()
+            self._observer = observer
+            logger.debug("Started pyudev monitor observer")
+        except Exception as error:
+            self.monitoring = False
+            self._observer = None
+            self._monitor = None
+            logger.error(f"Failed to start USB monitoring: {error}", exc_info=True)
+            raise
+
+        # Initial scan for devices that were present before monitoring began
         self._scan_existing_devices()
-        
-        # Monitor for changes
-        while self.monitoring:
-            try:
-                current_devices = self._get_current_devices()
-                
-                # Check for new devices
-                for device_path, device_info in current_devices.items():
-                    if device_path not in self.devices:
-                        self._handle_device_connected(device_info)
-                
-                # Check for removed devices
-                for device_path in list(self.devices.keys()):
-                    if device_path not in current_devices:
-                        self._handle_device_disconnected(self.devices[device_path])
-                
-                time.sleep(2)  # Poll every 2 seconds
-                
-            except Exception as e:
-                logger.error(f"Error in USB monitoring: {e}", exc_info=True)
-                time.sleep(5)  # Longer wait on error
     
     def stop_monitoring(self):
         """Stop USB device monitoring"""
         logger.info("Stopping USB device monitoring...")
+        if not self.monitoring:
+            logger.debug("USB monitoring already stopped")
         self.monitoring = False
+
+        observer = self._observer
+        if observer is not None:
+            try:
+                observer.stop()
+                observer.join(timeout=3.0)
+                logger.debug("Stopped pyudev monitor observer")
+            except Exception as error:
+                logger.debug(f"Error stopping monitor observer: {error}")
+        self._observer = None
+        self._monitor = None
         
         # Unmount all devices we mounted
-        for device_info in self.devices.values():
+        for device_info in list(self.devices.values()):
             if device_info.mount_point:
                 self._unmount_device(device_info)
+        self.devices.clear()
     
     def _scan_existing_devices(self):
         """Scan for already connected USB devices"""
@@ -117,20 +146,167 @@ class USBDetector:
             current_devices = self._get_current_devices()
             logger.debug(f"Found {len(current_devices)} devices")
             for device_path, device_info in current_devices.items():
-                self.devices[device_path] = device_info
                 logger.info(f"Found existing USB device: {device_info}")
-                # Notify application of connected device
-                if self.on_device_connected:
-                    logger.debug(f"Calling on_device_connected callback for {device_path}")
-                    try:
-                        self.on_device_connected(device_info)
-                    except Exception as e:
-                        logger.error(f"Error in on_device_connected callback: {e}")
-                else:
-                    logger.warning("No on_device_connected callback set")
+                self._handle_device_connected(device_info)
         except Exception as e:
             logger.error(f"Error in _scan_existing_devices: {e}", exc_info=True)
     
+    def _handle_udev_event(self, device: Any):
+        """Handle pyudev events for USB devices"""
+        action = getattr(device, "action", None)
+        if action is None:
+            try:
+                action = device.get("ACTION")
+            except Exception:  # pragma: no cover - pyudev internals
+                action = None
+        if not action:
+            return
+        if not self.monitoring:
+            return
+
+        device_node = getattr(device, "device_node", None)
+        if not device_node:
+            return
+
+        if action not in {"add", "remove", "change"}:
+            return
+
+        if not self._is_usb_device(device_node, device):
+            return
+
+        logger.debug(f"udev event '{action}' received for {device_node}")
+
+        if action == "add":
+            device_info = self._create_device_info_from_udev(device_node, device)
+            if not device_info:
+                logger.debug(f"Skipping {device_node}: unable to collect filesystem details")
+                return
+            self._handle_device_connected(device_info)
+        elif action == "remove":
+            existing = self.devices.get(device_node)
+            if existing:
+                self._handle_device_disconnected(existing)
+        elif action == "change":
+            if device_node not in self.devices:
+                return
+            updated_info = self._create_device_info_from_udev(device_node, device)
+            if updated_info:
+                self._refresh_device_metadata(updated_info)
+
+    def _create_device_info_from_udev(self, device_path: str, device: Any) -> Optional[USBDeviceInfo]:
+        """Create USBDeviceInfo from a udev device"""
+        filesystem = device.get('ID_FS_TYPE')
+        label = device.get('ID_FS_LABEL') or device.get('ID_FS_LABEL_ENC')
+        mount_point = self._find_mount_point(device_path)
+
+        size = 0
+        try:
+            sectors = device.attributes.asint('size')
+        except Exception:
+            sectors = None
+
+        if sectors:
+            block_size = 512
+            for attribute in ('queue/logical_block_size', 'queue/hw_sector_size', 'queue/physical_block_size'):
+                try:
+                    candidate = device.attributes.asint(attribute)
+                except Exception:
+                    continue
+                if candidate:
+                    block_size = candidate
+                    break
+            size = sectors * block_size
+
+        if not filesystem:
+            lsblk_info = self._lookup_device_via_lsblk(device_path)
+            if lsblk_info:
+                filesystem = lsblk_info.get('filesystem') or filesystem
+                mount_point = mount_point or lsblk_info.get('mount_point')
+                label = label or lsblk_info.get('label')
+                size = size or lsblk_info.get('size', 0)
+
+        if filesystem and filesystem not in self.supported_fs:
+            logger.info(f"Unsupported filesystem {filesystem} for {device_path}")
+            return None
+
+        return USBDeviceInfo(
+            device_path=device_path,
+            mount_point=mount_point,
+            filesystem=filesystem,
+            size=size,
+            label=label
+        )
+
+    def _lookup_device_via_lsblk(self, device_path: str) -> Optional[Dict[str, Any]]:
+        """Use lsblk to collect metadata for a specific device"""
+        try:
+            result = subprocess.run(
+                ['lsblk', '-J', '-o', 'NAME,FSTYPE,SIZE,MOUNTPOINT,LABEL', device_path],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+        except subprocess.CalledProcessError as error:
+            logger.debug(f"lsblk failed for {device_path}: {error}")
+            return None
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            logger.debug(f"lsblk JSON parse error for {device_path}: {error}")
+            return None
+
+        device_map: Dict[str, Dict[str, Any]] = {}
+        for entry in data.get('blockdevices', []):
+            self._collect_lsblk_device(entry, '/dev/', device_map)
+
+        return device_map.get(device_path)
+
+    def _collect_lsblk_device(self, entry: dict, parent_path: str, result: Dict[str, Dict[str, Any]]):
+        device_name = entry.get('name')
+        if not device_name:
+            return
+        device_path = parent_path + device_name
+        result[device_path] = {
+            'filesystem': entry.get('fstype'),
+            'size': self._parse_size(entry.get('size', '0')),
+            'mount_point': entry.get('mountpoint'),
+            'label': entry.get('label')
+        }
+
+        for child in entry.get('children', []) or []:
+            self._collect_lsblk_device(child, parent_path, result)
+
+    def _find_mount_point(self, device_path: str) -> Optional[str]:
+        try:
+            with open('/proc/mounts', 'r', encoding='utf-8') as mounts_file:
+                for line in mounts_file:
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    mount_source = os.path.realpath(parts[0])
+                    if mount_source == os.path.realpath(device_path):
+                        return parts[1]
+        except FileNotFoundError:
+            return None
+        except Exception as error:
+            logger.debug(f"Failed to determine mount point for {device_path}: {error}")
+        return None
+
+    def _refresh_device_metadata(self, updated_info: USBDeviceInfo):
+        existing = self.devices.get(updated_info.device_path)
+        if not existing:
+            return
+
+        if updated_info.mount_point:
+            existing.mount_point = updated_info.mount_point
+        if updated_info.filesystem:
+            existing.filesystem = updated_info.filesystem
+        if updated_info.size:
+            existing.size = updated_info.size
+        if updated_info.label:
+            existing.label = updated_info.label
+
     def _get_current_devices(self) -> Dict[str, USBDeviceInfo]:
         """Get currently connected USB devices"""
         devices = {}
@@ -196,23 +372,44 @@ class USBDetector:
         for child in device.get('children', []):
             self._process_block_device(child, devices, parent_path)
     
-    def _is_usb_device(self, device_path: str) -> bool:
-        """Check if device is a USB device"""
+    def _is_usb_device(self, device_path: str, udev_device: Optional[Any] = None) -> bool:
+        """Check if device is a USB-backed block device"""
         try:
-            # For development/testing mode, treat any removable device as USB
             if self.config.get('app.debug', False):
-                # In debug mode, treat any device with vfat/ntfs filesystem as potential USB
                 return True
-                
-            # Check if device path contains USB indicators
+
+            device = udev_device
+            if device is None and self._context is not None:
+                try:
+                    device = self._context.device_from_device_file(device_path)
+                except _PYUDEV_DEVICE_NOT_FOUND:
+                    device = None
+                except Exception as error:
+                    logger.debug(f"pyudev lookup failed for {device_path}: {error}")
+                    device = None
+
+            if device is not None:
+                if device.get('ID_BUS') != 'usb':
+                    return False
+                devtype = device.get('DEVTYPE')
+                if devtype and devtype not in {'disk', 'partition'}:
+                    return False
+                fs_usage = device.get('ID_FS_USAGE')
+                if fs_usage and fs_usage not in {'filesystem', 'crypto'}:
+                    return False
+                return True
+
             if '/dev/sd' in device_path:
-                # Check if it's actually USB via udev
-                result = subprocess.run(['udevadm', 'info', '--query=property', '--name', device_path],
-                                        capture_output=True, text=True)
+                result = subprocess.run(
+                    ['udevadm', 'info', '--query=property', '--name', device_path],
+                    capture_output=True,
+                    text=True
+                )
                 return 'ID_BUS=usb' in result.stdout
+
             return False
-        except Exception as e:
-            logger.debug(f"Error checking if {device_path} is USB: {e}")
+        except Exception as error:
+            logger.debug(f"Error checking if {device_path} is USB: {error}")
             return False
     
     def _parse_size(self, size_str: str) -> int:
@@ -237,15 +434,34 @@ class USBDetector:
     
     def _handle_device_connected(self, device_info: USBDeviceInfo):
         """Handle a newly connected device"""
+
+        existing_device = self.devices.get(device_info.device_path)
+        if existing_device:
+            logger.debug(f"USB device {device_info.device_path} already tracked; refreshing metadata")
+            self._refresh_device_metadata(device_info)
+            return
+
+        if device_info.filesystem and device_info.filesystem not in self.supported_fs:
+            logger.info(f"Skipping unsupported filesystem {device_info.filesystem} on {device_info.device_path}")
+            return
+
+        if not device_info.filesystem:
+            logger.debug(
+                "Detected block device %s without filesystem; waiting for partitions",
+                device_info.device_path,
+            )
+            self.devices[device_info.device_path] = device_info
+            return
+
         logger.info(f"USB device connected: {device_info}")
-        
+
         # Mount the device if not already mounted
         if not device_info.mount_point:
             mount_point = self._mount_device(device_info)
             device_info.mount_point = mount_point
-        
+
         self.devices[device_info.device_path] = device_info
-        
+
         if self.on_device_connected:
             self.on_device_connected(device_info)
     

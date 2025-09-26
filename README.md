@@ -14,9 +14,48 @@ ArgusPI v2 is a comprehensive USB virus scanning solution designed for Raspberry
 - **Qt Desktop Mode**: Rich PySide6-based desktop interface sharing the same callback surface
 - **Kiosk Mode**: Simple, public-facing interface for unattended operation
 - **Read-Only Protection**: Mounts USB devices in read-only mode for safety
+- **USB Device Profiling**: Captures vendor/product metadata, flags HID-capable peripherals, and warns on non-storage devices before scanning
+- **Modular Security Controls**: Enforce USB policy rules, quarantine infected files, and maintain a device reputation database
 - **Comprehensive Logging**: Detailed logging with configurable levels
 - **Configurable**: YAML-based configuration with environment variable overrides
 - **Resilient SIEM Delivery**: Automatically queues events locally when offline and flushes once connectivity returns
+
+## Security Modules
+
+ArgusPI v2 includes optional security adjuncts that can be enabled per environment:
+
+- **Quarantine Manager** (`security.quarantine`): Copies detected threats into an isolated directory, captures JSON reports, and enforces a retention limit.
+- **Device Reputation Store** (`security.reputation`): Persists device sightings in SQLite, tracks warning counts, and surfaces flag status during future connections.
+- **USB Policy Rules** (`security.rules`): Evaluates connected devices against local and remotely-synchronised rule sets (blocked VID/PID pairs, serial prefixes, interface classes).
+
+Threat detections immediately raise SIEM alerts (`threat_detected`), notify the active GUI backend, and optionally quarantine the offending file when enabled.
+
+### Configuring USB Policy Rules
+
+USB policy enforcement is highly configurable so you can blend on-device rules with centrally managed policies:
+
+- **Inline Local Rules** (`security.rules.local`): Edit `blocked_devices`, `blocked_serial_prefixes`, or `blocked_interfaces` directly inside `config/default.yaml` to hard-code policy entries that ship with the appliance.
+- **External Local Rule File** (`security.rules.local_file`): Point this setting at a separate YAML file (default: `config/rules.local.yaml`) that mirrors the `security.rules.local` structure. This keeps day-two changes out of the main configuration and makes it easier to distribute customised rule sets across scanners.
+
+  ```yaml
+  # config/rules.local.yaml
+  blocked_devices:
+    - vid: "1058"
+      pid: "25a1"
+      reason: "Quarantine known-bad USB enclosure"
+  blocked_serial_prefixes: []
+  blocked_interfaces:
+    - class: "03"
+      subclass: "01"
+      protocol: "01"
+      reason: "Disallow HID masquerading"
+  ```
+
+  The local file is optional—leave it empty or remove the key entirely if you don't need it. When present, its entries are merged with the inline lists before evaluation.
+
+- **Remote Synchronisation** (`security.rules.sync`): Enable this block to fetch additional policy entries from an HTTP(S) endpoint returning JSON encoded rules. ArgusPI periodically refreshes the data according to `sync.interval_minutes` and caches the most recent successful download so the rules remain available offline.
+
+Rule precedence combines all sources: inline + external file + remote sync. Any match raises a USB warning, forwards the event to SIEM, surfaces it in the active UI, and blocks automatic scans (unless you explicitly allow them per rule in a future release). Use this layering to separate permanent defaults from rapidly changing threat intelligence.
 
 ## Installation
 
@@ -274,6 +313,8 @@ siem:
     threats_found: true
     usb_connected: true
     usb_disconnected: true
+    usb_metadata: true
+    usb_warning: true
     system_errors: true
   timeout: 5 # Connection timeout in seconds
   offline_cache:
@@ -348,6 +389,7 @@ usb:
 - Run the service with sufficient permissions to subscribe to udev (typically via `sudo` or a systemd service)
 - For non-root usage, ensure the runtime user belongs to the `plugdev` group and has read access to `/dev/bus/usb`
 - Existing devices are discovered on startup and new ones are handled immediately without polling
+- Each USB attachment is profiled for vendor, product, serial, and interface descriptors; devices without the mass-storage class are logged, forwarded to SIEM as warnings, and surfaced to operators before any scan attempts to reduce HID spoofing attacks
 
 ## Security Features
 
@@ -366,7 +408,7 @@ ArgusPI v2 supports integration with Security Information and Event Management (
 
 - **Multiple Protocols**: Syslog (UDP), HTTP POST, and raw TCP
 - **Flexible Formats**: JSON, Common Event Format (CEF), and Log Event Extended Format (LEEF)
-- **Comprehensive Events**: USB connections, scan results, threat detections, and system errors
+- **Comprehensive Events**: USB connections, scan results, threat detections, USB metadata/warning alerts, and system errors
 - **Customizable Station Identity**: Each scanner can be uniquely identified by name and location
 - **Asynchronous Delivery**: Non-blocking event delivery to prevent impact on scanning performance
 

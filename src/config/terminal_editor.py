@@ -54,6 +54,7 @@ class TerminalConfigEditor:
         ],
         ("logging", "level"): ["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"],
         ("kiosk", "watchdog", "action"): ["restart-service", "exit"],
+        ("security", "quarantine", "report_format"): ["json", "text"],
     }
 
     TRUE_VALUES = {"true", "t", "yes", "y", "1", "on"}

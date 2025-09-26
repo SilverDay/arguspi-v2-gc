@@ -48,9 +48,10 @@ class ScanResult:
         self.stopped = False
         self.device_path = ""
         self.clamav_files_scanned = 0
+        self.quarantined_files: List[Dict[str, Any]] = []
     
-    def add_threat(self, file_path: str, threat_name: str, engine: str = ""):
-        """Add a detected threat"""
+    def add_threat(self, file_path: str, threat_name: str, engine: str = "") -> Dict[str, Any]:
+        """Add a detected threat and return the recorded entry."""
         threat = {
             'file': file_path,
             'threat': threat_name,
@@ -59,6 +60,11 @@ class ScanResult:
         }
         self.threats.append(threat)
         self.infected_files += 1
+        return threat
+
+    def add_quarantined_file(self, record: Dict[str, Any]) -> None:
+        """Track a quarantined file associated with this scan."""
+        self.quarantined_files.append(record)
     
     def add_error(self, error_msg: str):
         """Add an error to the scan results"""
@@ -93,6 +99,7 @@ class ScanEngine:
         self._clamav_last_init_error = ""
         self._clamav_warning_logged = False
         self._clamdscan_path: Optional[str] = None
+        self.on_threat_detected: Optional[Callable[[Dict[str, Any]], None]] = None
 
         default_cli_args = ['--fdpass', '--infected']
         cli_args_config = config.get('scanner.engines.clamav.cli_args', None)
@@ -280,6 +287,24 @@ class ScanEngine:
             logger.error(f"Error during file scan: {e}")
             self.current_scan.add_error(str(e))
     
+    def _record_threat(self, file_path: str, threat_name: str, engine: str) -> None:
+        threat_entry = self.current_scan.add_threat(file_path, threat_name, engine)
+        callback = self.on_threat_detected
+        if callback:
+            threat_info = {
+                'file': file_path,
+                'threat': threat_name,
+                'engine': engine,
+                'device_path': self.current_scan.device_path,
+                'timestamp': time.time(),
+                'scan_result': self.current_scan,
+                'threat_entry': threat_entry,
+            }
+            try:
+                callback(threat_info)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.debug("Threat callback failed: %s", exc, exc_info=True)
+
     def _scan_file(self, file_path: str):
         """Scan a single file for viruses"""
         try:
@@ -321,10 +346,10 @@ class ScanEngine:
             
             for sus_name in suspicious_names:
                 if sus_name in filename:
-                    self.current_scan.add_threat(
-                        file_path, 
+                    self._record_threat(
+                        file_path,
                         f"Suspicious filename: {sus_name}",
-                        "builtin"
+                        "builtin",
                     )
                     logger.warning(f"Suspicious file detected: {file_path}")
                     return
@@ -343,10 +368,10 @@ class ScanEngine:
                 
                 for pattern in suspicious_patterns:
                     if pattern in content.lower():
-                        self.current_scan.add_threat(
+                        self._record_threat(
                             file_path,
-                            f"Suspicious content pattern detected",
-                            "builtin"
+                            "Suspicious content pattern detected",
+                            "builtin",
                         )
                         logger.warning(f"Suspicious content in: {file_path}")
                         return
@@ -510,7 +535,7 @@ class ScanEngine:
                         status, signature = data
                         if status == 'FOUND':
                             signature_name = signature or 'ClamAV detection'
-                            self.current_scan.add_threat(file_path, signature_name, 'clamav')
+                            self._record_threat(file_path, signature_name, 'clamav')
                             logger.warning(f"ClamAV detected threat in {file_path}: {signature_name}")
                             break
                 return
@@ -593,7 +618,7 @@ class ScanEngine:
                 if detail:
                     signature_name = detail
 
-            self.current_scan.add_threat(file_path, signature_name, 'clamav')
+            self._record_threat(file_path, signature_name, 'clamav')
             logger.warning(f"ClamAV detected threat in {file_path}: {signature_name}")
             return
 
@@ -622,7 +647,7 @@ class ScanEngine:
         if cached is not None:
             malicious, detail = cached
             if malicious:
-                self.current_scan.add_threat(file_path, detail, 'virustotal')
+                self._record_threat(file_path, detail, 'virustotal')
             return
 
         url = f"https://www.virustotal.com/api/v3/files/{sha256}"
@@ -678,7 +703,7 @@ class ScanEngine:
 
         detail_summary = '; '.join(details[:5])
         self._virustotal_cache[sha256] = (True, detail_summary)
-        self.current_scan.add_threat(file_path, detail_summary, 'virustotal')
+        self._record_threat(file_path, detail_summary, 'virustotal')
         logger.warning(f"VirusTotal detected threat in {file_path}: {detail_summary}")
 
     def _hash_file(self, file_path: str) -> Optional[str]:

@@ -1,4 +1,5 @@
 """Qt-based GUI implementation for ArgusPI v2"""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -42,6 +43,7 @@ class _QtEventBridge(QObject):
     progress_update = Signal(dict)
     scan_complete = Signal(object)
     scan_error = Signal(str)
+    threat_detected = Signal(dict)
 
 
 class QtMainWindow(QMainWindow):
@@ -74,6 +76,7 @@ class QtMainWindow(QMainWindow):
         self._bridge.progress_update.connect(self._handle_scan_progress_ui)
         self._bridge.scan_complete.connect(self._handle_scan_complete_ui)
         self._bridge.scan_error.connect(self._handle_scan_error_ui)
+        self._bridge.threat_detected.connect(self._handle_threat_detected_ui)
 
         self._setup_ui()
         self._apply_theme()
@@ -86,6 +89,7 @@ class QtMainWindow(QMainWindow):
         logger.info("Launching Qt GUI window")
         self.running = True
         self.show()
+        assert self.app is not None
         self.app.exec()
         self.running = False
 
@@ -105,6 +109,9 @@ class QtMainWindow(QMainWindow):
 
     def on_scan_error(self, error_message: str):
         self._bridge.scan_error.emit(error_message)
+
+    def on_threat_detected(self, threat_info: Dict[str, Any]):
+        self._bridge.threat_detected.emit(threat_info or {})
 
     # ------------------------------------------------------------------
     # Qt UI setup helpers
@@ -304,6 +311,33 @@ class QtMainWindow(QMainWindow):
             'scan_time': scan_time,
             'device_path': device_path,
         }
+
+    def _handle_threat_detected_ui(self, threat_info: Dict[str, Any]):
+        if not threat_info:
+            return
+
+        file_path = threat_info.get('file', 'unknown')
+        threat_name = threat_info.get('threat', 'Potential threat')
+        engine = threat_info.get('engine', 'engine')
+        quarantine = threat_info.get('quarantine')
+
+        message_parts = [f"Threat detected by {engine}: {threat_name}", f"File: {file_path}"]
+        if quarantine:
+            message_parts.append("File was quarantined")
+
+        message = "\n".join(message_parts)
+        self.status_label.setText(message)
+        self._log(message)
+
+        record = {key: value for key, value in threat_info.items() if key != 'scan_result'}
+        if not isinstance(self.current_scan_info, dict) or self.current_scan_info is None:
+            self.current_scan_info = {}
+        threats = self.current_scan_info.setdefault('threats', [])
+        threats.append(record)
+        self.current_scan_info['threats_found'] = len(threats)
+
+        if self.config.get('gui.mode', 'simple').lower() == 'expert':
+            QMessageBox.warning(self, "Threat Detected", message)
 
     def _handle_scan_error_ui(self, error_message: str):
         self.scan_in_progress = False

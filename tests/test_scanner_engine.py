@@ -93,3 +93,25 @@ def test_scan_engine_cli_missing_binary(monkeypatch):
 
     assert engine._clamav_enabled is False
     assert engine._clamdscan_path is None
+
+
+def test_record_threat_invokes_callback_and_tracks_quarantine(monkeypatch):
+    config = DummyConfig()
+    engine = ScanEngine(config)
+
+    captured = {}
+
+    def fake_callback(info):
+        captured.update(info)
+        scan_result = info.get('scan_result')
+        if hasattr(scan_result, 'add_quarantined_file'):
+            scan_result.add_quarantined_file({'record_id': 'abc', 'file': info['file']})
+
+    engine.on_threat_detected = fake_callback
+    engine._record_threat('/tmp/eicar.txt', 'EICAR-Test-Signature', 'builtin')
+
+    assert captured['file'] == '/tmp/eicar.txt'
+    assert captured['threat'] == 'EICAR-Test-Signature'
+    assert captured['engine'] == 'builtin'
+    assert engine.current_scan.infected_files == 1
+    assert engine.current_scan.quarantined_files[0]['record_id'] == 'abc'

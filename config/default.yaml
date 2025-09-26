@@ -100,8 +100,11 @@ siem:
     scan_start: true
     scan_complete: true
     threats_found: true
+    threat_detected: true
     usb_connected: true
     usb_disconnected: true
+    usb_metadata: true
+    usb_warning: true
     system_errors: true
   timeout: 5
   offline_cache:
@@ -109,3 +112,28 @@ siem:
     path: "logs/siem_offline_cache.jsonl"
     max_records: 1000
     flush_interval: 30
+
+# Device security and policy controls
+security:
+  quarantine:
+    enabled: true
+    path: "quarantine"
+    report_format: "json"
+    max_records: 500
+  reputation:
+    enabled: true
+    database_path: "data/device_reputation.sqlite"
+  rules:
+    local:
+      blocked_devices: [] # Each entry: {vid: "1234", pid: "abcd", reason: "description"}
+      blocked_serial_prefixes: [] # Each entry: {prefix: "ABC", reason: "description"}
+      blocked_interfaces: [] # Each entry: {class: "03", subclass: "01", protocol: "01", reason: "description"}
+    local_file: "config/rules.local.yaml" # Optional external YAML file with the same keys as above
+    sync:
+      enabled: false
+      url: ""
+      interval_hours: 12
+      verify_tls: true
+      cache_path: "config/rules_cache.json"
+  notifications:
+    require_operator_ack: true

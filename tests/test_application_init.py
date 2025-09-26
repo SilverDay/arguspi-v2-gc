@@ -38,6 +38,8 @@ class DummyUSBDetector:
         self.config = config
         self.on_device_connected = None
         self.on_device_disconnected = None
+        self.on_device_metadata = None
+        self.on_device_warning = None
 
     def start_monitoring(self):  # pragma: no cover - not exercised
         self.start_called = True
@@ -170,10 +172,16 @@ def test_application_initializes_console_gui(application_module, monkeypatch):
     usb_connect_handler = app.usb_detector.on_device_connected
     assert gui_scan_handler is not None
     assert usb_connect_handler is not None
+    metadata_handler = app.usb_detector.on_device_metadata
+    warning_handler = app.usb_detector.on_device_warning
     assert getattr(gui_scan_handler, "__self__", None) is app
     assert getattr(gui_scan_handler, "__func__", None) is application_module.ArgusApplication._handle_scan_request
     assert getattr(usb_connect_handler, "__self__", None) is app
     assert getattr(usb_connect_handler, "__func__", None) is application_module.ArgusApplication._handle_usb_connected
+    assert getattr(metadata_handler, "__self__", None) is app
+    assert getattr(metadata_handler, "__func__", None) is application_module.ArgusApplication._handle_usb_metadata
+    assert getattr(warning_handler, "__self__", None) is app
+    assert getattr(warning_handler, "__func__", None) is application_module.ArgusApplication._handle_usb_warning
 
 
 def test_application_initializes_kiosk_gui(application_module, monkeypatch):
@@ -193,7 +201,13 @@ def test_application_initializes_kiosk_gui(application_module, monkeypatch):
     usb_connect_handler = app.usb_detector.on_device_connected
     assert gui_scan_handler is not None
     assert usb_connect_handler is not None
+    metadata_handler = app.usb_detector.on_device_metadata
+    warning_handler = app.usb_detector.on_device_warning
     assert getattr(gui_scan_handler, "__self__", None) is app
     assert getattr(gui_scan_handler, "__func__", None) is application_module.ArgusApplication._handle_scan_request
     assert getattr(usb_connect_handler, "__self__", None) is app
     assert getattr(usb_connect_handler, "__func__", None) is application_module.ArgusApplication._handle_usb_connected
+    assert getattr(metadata_handler, "__self__", None) is app
+    assert getattr(metadata_handler, "__func__", None) is application_module.ArgusApplication._handle_usb_metadata
+    assert getattr(warning_handler, "__self__", None) is app
+    assert getattr(warning_handler, "__func__", None) is application_module.ArgusApplication._handle_usb_warning

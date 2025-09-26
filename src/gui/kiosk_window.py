@@ -643,6 +643,36 @@ class KioskWindow:
             if scanned % 50 == 0:  # Log every 50 files
                 logger.debug(f"Scan progress: {scanned}/{total} files")
     
+    def on_threat_detected(self, threat_info: Dict[str, Any]):
+        """Record threat notifications during kiosk scans."""
+        if not threat_info:
+            return
+
+        self._touch_watchdog()
+
+        file_path = threat_info.get('file', 'unknown')
+        threat_name = threat_info.get('threat', 'Potential threat')
+        engine = threat_info.get('engine', 'engine')
+        logger.warning(
+            "Kiosk alert: threat detected by %s: %s (file=%s)",
+            engine,
+            threat_name,
+            file_path,
+        )
+
+        if not isinstance(self.current_scan_result, dict):
+            self.current_scan_result = {
+                'scanned_files': 0,
+                'threats_found': 0,
+                'status': 'In progress',
+                'threats': [],
+                'scan_time': 0,
+            }
+
+        threats = self.current_scan_result.setdefault('threats', [])
+        threats.append({key: value for key, value in threat_info.items() if key != 'scan_result'})
+        self.current_scan_result['threats_found'] = len(threats)
+
     def on_scan_complete(self, scan_result):
         """Handle scan completion in kiosk mode"""
         self._touch_watchdog()

@@ -257,6 +257,31 @@ class MainWindow:
         else:
             self._progress_line_active = False
     
+    def on_threat_detected(self, threat_info: Dict[str, Any]):
+        """Display immediate notification when a threat is detected."""
+        if not threat_info:
+            return
+
+        file_path = threat_info.get('file', 'unknown')
+        threat_name = threat_info.get('threat', 'Potential threat')
+        engine = threat_info.get('engine', 'engine')
+        quarantine = threat_info.get('quarantine')
+
+        alert_message = f"\n[ALERT] Threat detected by {engine}: {threat_name} (file: {file_path})"
+        if quarantine:
+            alert_message += " [quarantined]"
+        print(alert_message)
+
+        logger.warning("GUI alert: %s", alert_message.strip())
+
+        threat_record = {key: value for key, value in threat_info.items() if key != 'scan_result'}
+
+        if not isinstance(self.current_scan_info, dict):
+            self.current_scan_info = {}
+        threats_list = self.current_scan_info.setdefault('threats', [])
+        threats_list.append(threat_record)
+        self.current_scan_info['threats_found'] = len(threats_list)
+
     def on_scan_complete(self, scan_result):
         """Handle scan completion"""
         self.scan_in_progress = False

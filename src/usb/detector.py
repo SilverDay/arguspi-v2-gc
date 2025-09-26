@@ -5,8 +5,9 @@ USB device detection and management for ArgusPI v2
 import os
 import time
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any
+from typing import Optional, Callable, Dict, List, Any, Iterable
 import json
 import logging
 import importlib
@@ -23,20 +24,110 @@ _PYUDEV_DEVICE_NOT_FOUND = getattr(pyudev, "DeviceNotFoundError", Exception)
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class USBDeviceMetadata:
+    """Metadata describing a USB device as reported by udev."""
+
+    dev_node: str
+    vendor: Optional[str] = None
+    product: Optional[str] = None
+    manufacturer: Optional[str] = None
+    serial: Optional[str] = None
+    id_vendor: Optional[str] = None
+    id_product: Optional[str] = None
+    usb_class: Optional[str] = None
+    usb_class_desc: Optional[str] = None
+    interfaces: List[str] = field(default_factory=list)
+    busnum: Optional[str] = None
+    devnum: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    policy_matches: List[str] = field(default_factory=list)
+    reputation: Optional[Dict[str, Any]] = None
+
+    @property
+    def display_name(self) -> str:
+        parts: List[str] = []
+        for candidate in (self.manufacturer, self.vendor):
+            if candidate and candidate not in parts:
+                parts.append(candidate)
+        if self.product:
+            parts.append(self.product)
+        return " ".join(parts).strip() or self.dev_node
+
+    @property
+    def is_mass_storage(self) -> bool:
+        if self.usb_class and self.usb_class.lower().startswith("08"):
+            return True
+        return any(interface.lower().startswith("08") for interface in self.interfaces)
+
+    @property
+    def exposes_hid(self) -> bool:
+        return any(interface.lower().startswith("03") for interface in self.interfaces)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dev_node": self.dev_node,
+            "vendor": self.vendor,
+            "manufacturer": self.manufacturer,
+            "product": self.product,
+            "serial": self.serial,
+            "id_vendor": self.id_vendor,
+            "id_product": self.id_product,
+            "usb_class": self.usb_class,
+            "usb_class_desc": self.usb_class_desc,
+            "interfaces": list(self.interfaces),
+            "busnum": self.busnum,
+            "devnum": self.devnum,
+            "warnings": list(self.warnings),
+            "policy_matches": list(self.policy_matches),
+            "reputation": self.reputation,
+        }
+
+    def summary(self) -> str:
+        description = self.display_name
+        if self.id_vendor and self.id_product:
+            description += f" [{self.id_vendor}:{self.id_product}]"
+        if self.serial:
+            description += f" serial={self.serial}"
+        if self.warnings:
+            description += " | warnings=" + "; ".join(self.warnings)
+        return description
+
+
 class USBDeviceInfo:
     """Information about a USB device"""
     
-    def __init__(self, device_path: str, mount_point: Optional[str] = None, 
-                 filesystem: Optional[str] = None, size: int = 0, label: Optional[str] = None):
+    def __init__(
+        self,
+        device_path: str,
+        mount_point: Optional[str] = None,
+        filesystem: Optional[str] = None,
+        size: int = 0,
+        label: Optional[str] = None,
+        metadata: Optional[USBDeviceMetadata] = None,
+    ):
         self.device_path = device_path
         self.mount_point = mount_point
         self.filesystem = filesystem
         self.size = size
         self.label = label
+        self.metadata = metadata
         self.connected_time = time.time()
     
     def __str__(self):
-        return f"USB Device: {self.device_path} ({self.filesystem}, {self._format_size()}) at {self.mount_point}"
+        info_parts: List[str] = []
+        label_text = self.label or (self.metadata.display_name if self.metadata else None)
+        if label_text:
+            info_parts.append(label_text)
+        info_parts.append(self.device_path)
+        if self.filesystem:
+            info_parts.append(self.filesystem)
+        size_text = self._format_size()
+        if size_text:
+            info_parts.append(size_text)
+        if self.mount_point:
+            info_parts.append(f"mounted at {self.mount_point}")
+        return "USB Device: " + " | ".join(info_parts)
     
     def _format_size(self) -> str:
         """Format device size in human readable format"""
@@ -61,6 +152,8 @@ class USBDetector:
         # Callbacks
         self.on_device_connected: Optional[Callable] = None
         self.on_device_disconnected: Optional[Callable] = None
+        self.on_device_metadata: Optional[Callable[[USBDeviceMetadata], None]] = None
+        self.on_device_warning: Optional[Callable[[USBDeviceMetadata], None]] = None
         
         self.mount_base = Path(config.get('usb.mount_point', '/media/arguspi'))
         self.read_only = config.get('usb.read_only', True)
@@ -68,6 +161,11 @@ class USBDetector:
         self._context = pyudev.Context()
         self._monitor = None
         self._observer: Optional[Any] = None
+        self._usb_monitor = None
+        self._usb_observer: Optional[Any] = None
+        self._metadata_seen: Dict[str, float] = {}
+        self.rules_manager: Optional[Any] = None
+        self.reputation_store: Optional[Any] = None
         
         # Ensure mount base directory exists (use local directory if /media fails)
         try:
@@ -105,10 +203,29 @@ class USBDetector:
             observer.start()
             self._observer = observer
             logger.debug("Started pyudev monitor observer")
+
+            self._usb_monitor = pyudev.Monitor.from_netlink(self._context)
+            self._usb_monitor.filter_by(subsystem="usb")
+            usb_observer = pyudev.MonitorObserver(
+                self._usb_monitor,
+                callback=self._handle_usb_device_event,
+                name="arguspi-usb-info-monitor",
+                daemon=True,
+            )
+            usb_observer.start()
+            self._usb_observer = usb_observer
+            logger.debug("Started pyudev USB device metadata observer")
         except Exception as error:
             self.monitoring = False
             self._observer = None
             self._monitor = None
+            if self._usb_observer is not None:
+                try:
+                    self._usb_observer.stop()
+                except Exception:
+                    pass
+            self._usb_observer = None
+            self._usb_monitor = None
             logger.error(f"Failed to start USB monitoring: {error}", exc_info=True)
             raise
 
@@ -132,6 +249,17 @@ class USBDetector:
                 logger.debug(f"Error stopping monitor observer: {error}")
         self._observer = None
         self._monitor = None
+
+        usb_observer = self._usb_observer
+        if usb_observer is not None:
+            try:
+                usb_observer.stop()
+                usb_observer.join(timeout=3.0)
+                logger.debug("Stopped pyudev USB metadata observer")
+            except Exception as error:
+                logger.debug("Error stopping USB metadata observer: %s", error)
+        self._usb_observer = None
+        self._usb_monitor = None
         
         # Unmount all devices we mounted
         for device_info in list(self.devices.values()):
@@ -142,6 +270,7 @@ class USBDetector:
     def _scan_existing_devices(self):
         """Scan for already connected USB devices"""
         logger.debug("Scanning for existing USB devices...")
+        self._scan_existing_usb_peripherals()
         try:
             current_devices = self._get_current_devices()
             logger.debug(f"Found {len(current_devices)} devices")
@@ -151,6 +280,16 @@ class USBDetector:
         except Exception as e:
             logger.error(f"Error in _scan_existing_devices: {e}", exc_info=True)
     
+    def _scan_existing_usb_peripherals(self):
+        try:
+            for usb_device in self._context.list_devices(subsystem="usb", DEVTYPE="usb_device"):
+                dev_node = getattr(usb_device, "device_node", None) or usb_device.get("DEVNAME") or usb_device.sys_path
+                metadata = self._extract_metadata(str(dev_node), usb_device)
+                if metadata:
+                    self._emit_metadata(metadata)
+        except Exception as error:
+            logger.debug("Unable to enumerate existing USB peripherals: %s", error)
+
     def _handle_udev_event(self, device: Any):
         """Handle pyudev events for USB devices"""
         action = getattr(device, "action", None)
@@ -193,6 +332,29 @@ class USBDetector:
             if updated_info:
                 self._refresh_device_metadata(updated_info)
 
+    def _handle_usb_device_event(self, device: Any):
+        if not self.monitoring:
+            return
+
+        try:
+            action = getattr(device, "action", None)
+            if action is None:
+                action = device.get("ACTION")
+        except Exception:
+            action = None
+
+        if action not in {"add", "change"}:
+            return
+
+        device_type = getattr(device, "device_type", None)
+        if device_type != "usb_device":
+            return
+
+        dev_node = getattr(device, "device_node", None) or device.get("DEVNAME") or device.get("DEVPATH") or device.sys_path
+        metadata = self._extract_metadata(str(dev_node), device)
+        if metadata:
+            self._emit_metadata(metadata)
+
     def _create_device_info_from_udev(self, device_path: str, device: Any) -> Optional[USBDeviceInfo]:
         """Create USBDeviceInfo from a udev device"""
         filesystem = device.get('ID_FS_TYPE')
@@ -229,12 +391,15 @@ class USBDetector:
             logger.info(f"Unsupported filesystem {filesystem} for {device_path}")
             return None
 
+        metadata = self._extract_metadata(device_path, device)
+
         return USBDeviceInfo(
             device_path=device_path,
             mount_point=mount_point,
             filesystem=filesystem,
             size=size,
-            label=label
+            label=label,
+            metadata=metadata,
         )
 
     def _lookup_device_via_lsblk(self, device_path: str) -> Optional[Dict[str, Any]]:
@@ -306,6 +471,8 @@ class USBDetector:
             existing.size = updated_info.size
         if updated_info.label:
             existing.label = updated_info.label
+        if updated_info.metadata:
+            existing.metadata = updated_info.metadata
 
     def _get_current_devices(self) -> Dict[str, USBDeviceInfo]:
         """Get currently connected USB devices"""
@@ -432,6 +599,156 @@ class USBDetector:
         except ValueError:
             return 0
     
+    def _emit_metadata(self, metadata: USBDeviceMetadata) -> None:
+        self._apply_rules(metadata)
+        self._update_reputation(metadata)
+        now = time.time()
+        last_seen = self._metadata_seen.get(metadata.dev_node)
+        self._metadata_seen[metadata.dev_node] = now
+        if last_seen is not None and (now - last_seen) < 0.5:
+            return
+
+        logger.info("USB device metadata: %s", metadata.summary())
+        if metadata.warnings:
+            for message in metadata.warnings:
+                logger.warning("USB device warning: %s -> %s", metadata.display_name, message)
+
+        if self.on_device_metadata:
+            try:
+                self.on_device_metadata(metadata)
+            except Exception as error:  # pragma: no cover - defensive logging
+                logger.debug("Metadata callback error: %s", error, exc_info=True)
+
+        if metadata.warnings and self.on_device_warning:
+            try:
+                self.on_device_warning(metadata)
+            except Exception as error:  # pragma: no cover - defensive logging
+                logger.debug("Warning callback error: %s", error, exc_info=True)
+
+    def _apply_rules(self, metadata: USBDeviceMetadata) -> None:
+        manager = getattr(self, "rules_manager", None)
+        if not manager:
+            return
+        try:
+            matches = manager.evaluate(metadata)
+        except Exception as error:  # pragma: no cover - defensive logging
+            logger.debug("Failed to evaluate USB policy rules: %s", error, exc_info=True)
+            return
+        if not matches:
+            return
+        for match in matches:
+            message = getattr(match, "message", str(match))
+            if message not in metadata.policy_matches:
+                metadata.policy_matches.append(message)
+            if message not in metadata.warnings:
+                metadata.warnings.append(message)
+
+    def _update_reputation(self, metadata: USBDeviceMetadata) -> None:
+        store = getattr(self, "reputation_store", None)
+        if not store:
+            return
+        try:
+            record = store.record_observation(metadata)
+        except Exception as error:  # pragma: no cover - defensive logging
+            logger.debug("Failed to update device reputation: %s", error, exc_info=True)
+            return
+        if not record:
+            return
+        reputation_payload = record.to_dict() if hasattr(record, "to_dict") else record
+        metadata.reputation = reputation_payload
+        status = getattr(record, "status", "") or ""
+        if status.lower() == "flagged":
+            warning = (
+                f"Device reputation flagged: {getattr(record, 'warning_count', 0)} warnings "
+                f"across {getattr(record, 'observation_count', 0)} observations"
+            )
+            if warning not in metadata.warnings:
+                metadata.warnings.append(warning)
+
+    def _extract_metadata(self, device_path: str, device: Any) -> Optional[USBDeviceMetadata]:
+        try:
+            usb_device = device
+            if getattr(usb_device, "subsystem", None) != "usb" or getattr(usb_device, "device_type", None) != "usb_device":
+                try:
+                    usb_device = device.find_parent('usb', 'usb_device')
+                except Exception:
+                    usb_device = None
+
+            if usb_device is None:
+                return None
+
+            def _prop(dev: Any, key: str) -> Optional[str]:
+                try:
+                    value = dev.get(key)
+                except Exception:
+                    value = None
+                if value in (None, ""):
+                    return None
+                return str(value)
+
+            def _attr(dev: Any, key: str) -> Optional[str]:
+                attributes = getattr(dev, 'attributes', None)
+                if attributes is None:
+                    return None
+                if hasattr(attributes, 'asstring'):
+                    try:
+                        value = attributes.asstring(key)
+                        if value not in (None, ""):
+                            return str(value)
+                    except Exception:
+                        pass
+                try:
+                    raw_value = getattr(attributes, key)
+                except AttributeError:
+                    return None
+                if raw_value is None:
+                    return None
+                if isinstance(raw_value, bytes):
+                    return raw_value.decode(errors='ignore')
+                return str(raw_value)
+
+            interfaces = self._parse_interfaces(
+                _prop(usb_device, 'ID_USB_INTERFACES') or _prop(device, 'ID_USB_INTERFACES')
+            )
+
+            dev_node = device_path or _prop(usb_device, 'DEVNAME') or getattr(usb_device, 'device_node', None) or usb_device.sys_path
+
+            metadata = USBDeviceMetadata(
+                dev_node=str(dev_node),
+                vendor=_prop(usb_device, 'ID_VENDOR_FROM_DATABASE') or _prop(usb_device, 'ID_VENDOR'),
+                manufacturer=_attr(usb_device, 'manufacturer') or _prop(usb_device, 'ID_VENDOR_FROM_DATABASE') or _prop(usb_device, 'ID_VENDOR'),
+                product=_prop(usb_device, 'ID_MODEL_FROM_DATABASE') or _prop(usb_device, 'ID_MODEL'),
+                serial=_prop(usb_device, 'ID_SERIAL_SHORT') or _attr(usb_device, 'serial'),
+                id_vendor=_prop(usb_device, 'ID_VENDOR_ID'),
+                id_product=_prop(usb_device, 'ID_MODEL_ID'),
+                usb_class=_prop(usb_device, 'ID_USB_CLASS'),
+                usb_class_desc=_prop(usb_device, 'ID_USB_CLASS_FROM_DATABASE'),
+                interfaces=interfaces,
+                busnum=_attr(usb_device, 'busnum') or _prop(usb_device, 'BUSNUM'),
+                devnum=_attr(usb_device, 'devnum') or _prop(usb_device, 'DEVNUM'),
+            )
+
+            if not metadata.is_mass_storage:
+                metadata.warnings.append("Device is not a USB mass-storage class peripheral.")
+            if metadata.is_mass_storage and metadata.exposes_hid:
+                metadata.warnings.append("Device also exposes USB HID interface(s).")
+
+            return metadata
+        except Exception as error:
+            logger.debug("Failed to collect USB metadata for %s: %s", device_path, error)
+            return None
+
+    @staticmethod
+    def _parse_interfaces(raw_value: Optional[str]) -> List[str]:
+        if not raw_value:
+            return []
+        tokens = []
+        for token in str(raw_value).strip(':').split(':'):
+            token = token.strip()
+            if token:
+                tokens.append(token)
+        return tokens
+
     def _handle_device_connected(self, device_info: USBDeviceInfo):
         """Handle a newly connected device"""
 
@@ -440,6 +757,14 @@ class USBDetector:
             logger.debug(f"USB device {device_info.device_path} already tracked; refreshing metadata")
             self._refresh_device_metadata(device_info)
             return
+
+        if device_info.metadata:
+            self._emit_metadata(device_info.metadata)
+            if not device_info.metadata.is_mass_storage:
+                logger.info(
+                    "Ignoring non-mass-storage USB device %s", device_info.metadata.display_name
+                )
+                return
 
         if device_info.filesystem and device_info.filesystem not in self.supported_fs:
             logger.info(f"Skipping unsupported filesystem {device_info.filesystem} on {device_info.device_path}")

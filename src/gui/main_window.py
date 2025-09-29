@@ -33,6 +33,9 @@ class MainWindow:
         self.current_scan_info = None
         self.scan_in_progress = False
         self._progress_line_active = False
+        self._last_progress_print = 0.0
+        self._last_progress_line = ""
+        self._progress_print_interval = 0.5
         
         logger.info(f"GUI initialized in console mode for station: {self.station_name}")
     
@@ -44,6 +47,20 @@ class MainWindow:
             logger.warning("Input stream closed; exiting console interface")
             self.running = False
             return None
+
+    @staticmethod
+    def _format_duration(seconds: Optional[float]) -> str:
+        """Format seconds into hh:mm:ss.ss string."""
+        if seconds is None:
+            return "00:00:00.00"
+        try:
+            total_seconds = max(0.0, float(seconds))
+        except (TypeError, ValueError):
+            return "00:00:00.00"
+
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        return f"{int(hours):02}:{int(minutes):02}:{secs:05.2f}"
 
     def run(self):
         """Run the main GUI loop - console version"""
@@ -245,17 +262,37 @@ class MainWindow:
             scanned = progress_info.get('scanned_files', 0)
             current_file = progress_info.get('current_file', '')
             threats = progress_info.get('threats_found', 0)
+            elapsed = progress_info.get('elapsed_time')
             
             if total > 0:
                 percentage = (scanned / total) * 100
-                prefix = '\n' if not self._progress_line_active else '\r'
-                print(f"{prefix}Scanning: {scanned}/{total} ({percentage:.1f}%) - Threats: {threats}", end='', flush=True)
-                self._progress_line_active = True
+                elapsed_str = self._format_duration(elapsed)
+                line = (
+                    f"Scanning: {scanned}/{total} ({percentage:.1f}%) "
+                    f"- Threats: {threats} - Elapsed: {elapsed_str}"
+                )
+                if current_file:
+                    line += f" - Current: {Path(current_file).name}"
+
+                now = time.time()
+                should_print = (
+                    not self._last_progress_line
+                    or line != self._last_progress_line
+                    or scanned >= total
+                    or (now - self._last_progress_print) >= self._progress_print_interval
+                )
+
+                if should_print:
+                    print(line)
+                    self._last_progress_line = line
+                    self._last_progress_print = now
+                self._progress_line_active = False
             
             # Store current scan info
             self.current_scan_info = progress_info
         else:
             self._progress_line_active = False
+            self._last_progress_line = ""
     
     def on_threat_detected(self, threat_info: Dict[str, Any]):
         """Display immediate notification when a threat is detected."""
@@ -295,7 +332,7 @@ class MainWindow:
         if hasattr(scan_result, 'clamav_files_scanned'):
             print(f"ClamAV files scanned: {scan_result.clamav_files_scanned}")
         print(f"Threats found: {scan_result.infected_files}")
-        print(f"Scan time: {scan_result.scan_time:.2f} seconds")
+        print(f"Scan time: {self._format_duration(scan_result.scan_time)}")
         if getattr(scan_result, 'device_path', ''):
             print(f"Device path: {scan_result.device_path}")
         
@@ -319,6 +356,8 @@ class MainWindow:
         }
         
         self._read_input("\nPress Enter to continue...")
+        self._last_progress_line = ""
+        self._last_progress_print = 0.0
     
     def on_scan_error(self, error_message: str):
         """Handle scan error"""

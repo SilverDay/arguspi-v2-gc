@@ -98,6 +98,7 @@ class ScanEngine:
         self._clamav_prefer_cli = bool(config.get('scanner.engines.clamav.prefer_cli', False))
         self._clamav_last_init_error = ""
         self._clamav_warning_logged = False
+        self._scan_start_time: Optional[float] = None
         self._clamdscan_path: Optional[str] = None
         self.on_threat_detected: Optional[Callable[[Dict[str, Any]], None]] = None
 
@@ -187,12 +188,14 @@ class ScanEngine:
                     'total_files': self.current_scan.total_files,
                     'scanned_files': 0,
                     'current_file': '',
-                    'threats_found': 0
+                    'threats_found': 0,
+                    'elapsed_time': 0.0,
                 })
             
             # Phase 2: Scan files
             logger.info(f"Scanning {self.current_scan.total_files} files...")
             start_time = time.time()
+            self._scan_start_time = start_time
             self._scan_files(device_path, progress_callback)
             self.current_scan.scan_time = time.time() - start_time
             
@@ -219,6 +222,7 @@ class ScanEngine:
                 completion_callback(self.current_scan)
         finally:
             self.scanning = False
+            self._scan_start_time = None
     
     def stop_scan(self):
         """Stop the current scan"""
@@ -277,7 +281,8 @@ class ScanEngine:
                                 'total_files': self.current_scan.total_files,
                                 'scanned_files': scanned,
                                 'current_file': file_path,
-                                'threats_found': self.current_scan.infected_files
+                                'threats_found': self.current_scan.infected_files,
+                                'elapsed_time': (time.time() - self._scan_start_time) if self._scan_start_time else 0.0,
                             })
                         
                         # Small delay to allow UI updates

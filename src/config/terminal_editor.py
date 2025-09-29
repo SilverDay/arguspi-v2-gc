@@ -111,14 +111,22 @@ class TerminalConfigEditor:
         if isinstance(container, dict):
             for display_index, key in enumerate(container.keys(), start=1):
                 value = container[key]
+                openable = isinstance(value, (dict, list))
+                display_value = value
+                from_env = False
+                if not openable:
+                    path_key = ".".join(self._path_tuple(key))
+                    display_value, from_env = self.config.get_with_override(path_key, value)
                 entries.append(
                     {
                         "display_index": display_index,
                         "key": key,
                         "label": str(key),
                         "value": value,
+                        "display_value": display_value,
+                        "from_env": from_env,
                         "container_type": "dict",
-                        "openable": isinstance(value, (dict, list)),
+                        "openable": openable,
                     }
                 )
         elif isinstance(container, list):
@@ -129,6 +137,8 @@ class TerminalConfigEditor:
                         "key": display_index - 1,
                         "label": f"[{display_index - 1}]",
                         "value": value,
+                        "display_value": value,
+                        "from_env": False,
                         "container_type": "list",
                         "openable": isinstance(value, (dict, list)),
                     }
@@ -144,7 +154,10 @@ class TerminalConfigEditor:
 
         for entry in self._current_entries:
             arrow = "➜" if entry["openable"] else " "
-            summary = self.summarize_value(entry["value"])
+            display_value = entry.get("display_value", entry["value"])
+            summary = self.summarize_value(display_value)
+            if entry.get("from_env"):
+                summary += "  (env override)"
             print(f"{entry['display_index']:>2}. {arrow} {entry['label']:<24} {summary}")
 
     def _render_footer(self, container: Any) -> None:
@@ -289,6 +302,7 @@ class TerminalConfigEditor:
             self.status_message = "Invalid selection."
             return True
         value = entry["value"]
+        display_value = entry.get("display_value", value)
         if isinstance(value, (dict, list)):
             self.status_message = "Cannot edit a nested structure directly; open it first."
             return True
@@ -297,7 +311,12 @@ class TerminalConfigEditor:
         type_name = type(value).__name__
         choices = self._choices_for_entry(entry)
         if choices:
-            self._present_choices(choices, value)
+            self._present_choices(choices, display_value)
+        if entry.get("from_env"):
+            print(
+                "Note: This value is currently overridden by an environment variable. "
+                "File changes will take effect once the override is removed."
+            )
         while True:
             user_input = input(f"New value for {label} ({type_name}) [blank to cancel]: ")
             if user_input == "":

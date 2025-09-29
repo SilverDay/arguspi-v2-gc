@@ -466,6 +466,8 @@ This version of ArgusPI v2 is designed to be modular and extensible. Key compone
 - `src/usb/detector.py`: USB device detection and mounting
 - `src/scanner/engine.py`: Virus scanning coordination
 
+Refer to `docs/test-plan.md` for a step-by-step manual validation checklist covering every operating mode and security feature.
+
 ## License
 
 This project is provided under the MIT License.

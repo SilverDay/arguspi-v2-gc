@@ -6,7 +6,7 @@ import os
 import logging
 import yaml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 # Use built-in logging until our custom logger is set up
 logger = logging.getLogger(__name__)
@@ -32,36 +32,115 @@ class Config:
     
     def get(self, key: str, default=None) -> Any:
         """Get configuration value with dot notation support"""
-        keys = key.split('.')
-        value = self._config
-        
-        try:
-            for k in keys:
-                value = value[k]
-        except (KeyError, TypeError):
-            value = default
-        
-        # Check for environment variable override
-        env_key = '_'.join(['ARGUS'] + [k.upper() for k in keys])
-        env_value = os.getenv(env_key)
-        if env_value is not None:
-            # Try to convert to appropriate type
-            if isinstance(value, bool):
-                value = env_value.lower() in ('true', '1', 'yes', 'on')
-            elif isinstance(value, int):
-                try:
-                    value = int(env_value)
-                except ValueError:
-                    pass
-            elif isinstance(value, float):
-                try:
-                    value = float(env_value)
-                except ValueError:
-                    pass
-            else:
-                value = env_value
-        
+        value, _ = self.get_with_override(key, default)
         return value
+
+    def get_with_override(self, key: str, default=None) -> Tuple[Any, bool]:
+        """Return a configuration value and whether an environment override was applied."""
+        keys = key.split('.') if key else []
+        value: Any = self._config
+        value_missing = False
+
+        for part in keys:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+                continue
+            if isinstance(value, list):
+                try:
+                    index = int(part)
+                except ValueError:
+                    value_missing = True
+                    value = default
+                    break
+                if 0 <= index < len(value):
+                    value = value[index]
+                    continue
+            value_missing = True
+            value = default
+            break
+
+        return self._apply_env_override(keys, value, default, value_missing)
+
+    def _apply_env_override(
+        self,
+        keys: Sequence[str],
+        current_value: Any,
+        default: Any,
+        value_missing: bool,
+    ) -> Tuple[Any, bool]:
+        env_value = self._lookup_env_override(keys)
+        if env_value is None:
+            return current_value, False
+
+        template = current_value if not value_missing else default
+        success, coerced = self._coerce_env_value(env_value, template)
+        if not success:
+            return current_value, False
+        return coerced, True
+
+    def _lookup_env_override(self, keys: Sequence[str]) -> Optional[str]:
+        if not keys:
+            return None
+        parts = [str(k).upper() for k in keys]
+        nested_key = "__".join(parts)
+        candidates = [
+            "_".join(["ARGUS"] + parts),
+            f"ARGUS_{nested_key}",
+            f"ARGUS__{nested_key}",
+        ]
+        for candidate in candidates:
+            if candidate in os.environ:
+                return os.environ[candidate]
+        return None
+
+    @staticmethod
+    def _coerce_env_value(raw_value: str, template: Any) -> Tuple[bool, Any]:
+        if isinstance(template, bool):
+            lowered = raw_value.strip().lower()
+            if lowered in {'true', '1', 'yes', 'on', 'y', 't'}:
+                return True, True
+            if lowered in {'false', '0', 'no', 'off', 'n', 'f'}:
+                return True, False
+            return False, template
+
+        if isinstance(template, int) and not isinstance(template, bool):
+            try:
+                return True, int(raw_value.strip(), 0)
+            except ValueError:
+                return False, template
+
+        if isinstance(template, float):
+            try:
+                return True, float(raw_value.strip())
+            except ValueError:
+                return False, template
+
+        if isinstance(template, list):
+            try:
+                parsed = yaml.safe_load(raw_value)
+            except yaml.YAMLError:
+                return False, template
+            if isinstance(parsed, list):
+                return True, parsed
+            return False, template
+
+        if isinstance(template, dict):
+            try:
+                parsed = yaml.safe_load(raw_value)
+            except yaml.YAMLError:
+                return False, template
+            if isinstance(parsed, dict):
+                return True, parsed
+            return False, template
+
+        if template is None:
+            try:
+                parsed = yaml.safe_load(raw_value)
+            except yaml.YAMLError:
+                return True, raw_value
+            return True, parsed
+
+        return True, raw_value
     
     def set(self, key: str, value: Any):
         """Set configuration value"""

@@ -114,3 +114,19 @@ def test_edit_entry_with_predefined_choices(monkeypatch):
         editor._edit_entry(display_index, container)
 
     assert container["level"] == "DEBUG"
+
+
+def test_render_shows_env_override(monkeypatch):
+    monkeypatch.setenv("ARGUS_GUI__BACKEND", "kiosk")
+    editor = TerminalConfigEditor(clear_screen=False)
+    editor.current_path = ["gui"]
+    container = editor.config.data["gui"]
+
+    stdout = io.StringIO()
+    with redirect_stdout(stdout):
+        editor._render(container)
+
+    output = stdout.getvalue()
+    assert "backend" in output
+    assert "kiosk" in output
+    assert "env override" in output
